@@ -1,6 +1,6 @@
 from PyQt5.QtWidgets import (QDialog, QWidget, QVBoxLayout, QHBoxLayout, QListWidget, 
                              QListWidgetItem, QStackedWidget, QLabel, QPushButton, 
-                             QScrollArea, QFrame, QComboBox, QCheckBox, QFormLayout)
+                             QScrollArea, QFrame, QComboBox, QCheckBox, QFormLayout, QGridLayout)
 from PyQt5.QtCore import Qt, QSize
 from PyQt5.QtGui import QIcon, QFont
 
@@ -219,7 +219,7 @@ class SystemSettingsDialog(QDialog):
         name.setAlignment(Qt.AlignCenter)
         layout.addWidget(name)
         
-        version = QLabel("Version 1.0.0")
+        version = QLabel("Version 1.0.1")
         version.setStyleSheet("font-size: 14px; color: #888; margin-bottom: 10px;")
         version.setAlignment(Qt.AlignCenter)
         layout.addWidget(version)
@@ -234,55 +234,68 @@ class SystemSettingsDialog(QDialog):
                 border: 1px solid #E5E5E5;
             }
         """)
-        info_layout = QVBoxLayout(info_container)
-        info_layout.setContentsMargins(0, 0, 0, 0)
-        info_layout.setSpacing(0)
         
-        def create_info_row(label, text, is_last=False):
-            row_widget = QWidget()
-            row_widget.setFixedHeight(44) # 标准 iOS 列表行高
-            row_layout = QHBoxLayout(row_widget)
-            row_layout.setContentsMargins(15, 0, 15, 0)
-            
-            # 使用一个容器来居中显示 key 和 value
-            center_container = QWidget()
-            center_layout = QHBoxLayout(center_container)
-            center_layout.setContentsMargins(0, 0, 0, 0)
-            center_layout.setSpacing(5) # 冒号和内容之间的间距
-            
-            lbl_key = QLabel(label)
-            lbl_key.setStyleSheet("font-size: 14px; color: #000;")
-            lbl_key.setAlignment(Qt.AlignCenter)
-            
-            lbl_val = QLabel(text)
-            lbl_val.setStyleSheet("font-size: 14px; color: #888;")
-            lbl_val.setAlignment(Qt.AlignCenter)
-            
-            center_layout.addWidget(lbl_key)
-            center_layout.addWidget(lbl_val)
-            
-            row_layout.addStretch()
-            row_layout.addWidget(center_container)
-            row_layout.addStretch()
-            
-            # Container to hold row + separator
-            container = QWidget()
-            container_layout = QVBoxLayout(container)
-            container_layout.setContentsMargins(0, 0, 0, 0)
-            container_layout.setSpacing(0)
-            container_layout.addWidget(row_widget)
-            
-            if not is_last:
-                line = QFrame()
-                line.setFixedHeight(1)
-                line.setStyleSheet("background-color: #E5E5E5; margin-left: 15px;") # Indented separator
-                container_layout.addWidget(line)
-                
-            return container
-            
-        info_layout.addWidget(create_info_row("单位：", "汕头水电车间"))
-        info_layout.addWidget(create_info_row("作者：", "杨昊"))
-        info_layout.addWidget(create_info_row("技术指导：", "洪映森", is_last=True))
+        # 使用 QGridLayout 实现二列三行表格
+        info_layout = QGridLayout(info_container)
+        info_layout.setContentsMargins(20, 25, 20, 25) # 增加内边距
+        info_layout.setVerticalSpacing(20) # 增加行间距，使布局分散
+        info_layout.setHorizontalSpacing(10)
+        
+        # 定义样式
+        label_style = "font-family: 'Microsoft YaHei'; font-size: 14px; color: #000; font-weight: bold;"
+        value_style = "font-family: 'Microsoft YaHei'; font-size: 14px; color: #555;"
+        
+        # 第一行
+        lbl_unit = QLabel("单位：")
+        lbl_unit.setStyleSheet(label_style)
+        lbl_unit.setAlignment(Qt.AlignCenter)
+        
+        val_unit = QLabel("汕头水电车间")
+        val_unit.setStyleSheet(value_style)
+        val_unit.setAlignment(Qt.AlignCenter)
+        
+        info_layout.addWidget(lbl_unit, 0, 0)
+        info_layout.addWidget(val_unit, 0, 1)
+        
+        # 第二行
+        lbl_author = QLabel("作者：")
+        lbl_author.setStyleSheet(label_style)
+        lbl_author.setAlignment(Qt.AlignCenter)
+        
+        val_author = QLabel("杨昊")
+        val_author.setStyleSheet(value_style)
+        val_author.setAlignment(Qt.AlignCenter)
+        
+        info_layout.addWidget(lbl_author, 1, 0)
+        info_layout.addWidget(val_author, 1, 1)
+        
+        # 第三行
+        lbl_tech = QLabel("技术指导：")
+        lbl_tech.setStyleSheet(label_style)
+        lbl_tech.setAlignment(Qt.AlignCenter)
+        
+        val_tech = QLabel("洪映森")
+        val_tech.setStyleSheet(value_style)
+        val_tech.setAlignment(Qt.AlignCenter)
+        
+        info_layout.addWidget(lbl_tech, 2, 0)
+        info_layout.addWidget(val_tech, 2, 1)
+        
+        # 第四行
+        lbl_date = QLabel("发布日期：")
+        lbl_date.setStyleSheet(label_style)
+        lbl_date.setAlignment(Qt.AlignCenter)
+        
+        val_date = QLabel("2025年12月")
+        val_date.setStyleSheet(value_style)
+        val_date.setAlignment(Qt.AlignCenter)
+        
+        info_layout.addWidget(lbl_date, 3, 0)
+        info_layout.addWidget(val_date, 3, 1)
+        
+        # 设置列宽比例，使其平分或合理分布
+        info_layout.setColumnStretch(0, 1)
+        info_layout.setColumnStretch(1, 1)
         
         layout.addWidget(info_container)
         
