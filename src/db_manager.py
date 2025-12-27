@@ -158,26 +158,24 @@ class DBManager:
             return False, str(e)
             
     def delete_user(self, user_id):
-        # Soft delete or hard delete? User asked for history record keeping so maybe soft delete is better.
-        # But for now let's implement hard delete or is_active toggle
+        # Hard delete as requested by user to allow ID reuse
         session = self.get_session()
         try:
             u = session.query(User).filter_by(id=user_id).first()
             if u:
-                # Check dependencies?
-                # If we hard delete user, cascade delete schedules?
-                # SQLite usually needs PRAGMA foreign_keys = ON
-                # For safety, let's just toggle is_active if we wanted soft delete
-                # But to keep it simple and clean for "Delete" button:
-                # session.delete(u) 
+                # 1. Delete all schedules for this user
+                session.query(Schedule).filter_by(user_id=user_id).delete()
                 
-                # Let's do soft delete as per V2.1 model
-                u.is_active = False
+                # 2. Delete the user
+                session.delete(u)
+                
                 session.commit()
             session.close()
             return True
         except Exception as e:
+            session.rollback()
             session.close()
+            print(f"Delete failed: {e}")
             return False
 
     def clear_all_preferences(self):

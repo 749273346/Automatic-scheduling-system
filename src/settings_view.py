@@ -82,6 +82,12 @@ class SettingsView(QWidget):
         # Table
         self.table = QTableWidget()
         self.table.setAlternatingRowColors(True)
+        self.table.setStyleSheet("""
+            QTableWidget::item:selected {
+                background-color: #E5F3FF;
+                color: black;
+            }
+        """)
         self.table.setShowGrid(False)
         self.table.setColumnCount(6)
         self.table.setHorizontalHeaderLabels(["ID (Code)", "姓名", "职位", "联系方式", "颜色", "操作"])
@@ -633,11 +639,11 @@ class UserEditDialog(QDialog):
         
         # Position
         self.combo_position = QComboBox()
-        self.combo_position.addItems(["员工", "组长", "主管", "经理", "实习生"])
+        self.combo_position.addItems(["工长", "副工长", "职工", "见习生"])
         self.combo_position.setEditable(True) # Allow custom
         if self.user and self.user.position:
             self.combo_position.setCurrentText(self.user.position)
-        form_layout.addRow("职位/角色:", self.combo_position)
+        form_layout.addRow("职务:", self.combo_position)
         
         # Contact
         self.edit_contact = QLineEdit()

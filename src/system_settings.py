@@ -219,7 +219,7 @@ class SystemSettingsDialog(QDialog):
         name.setAlignment(Qt.AlignCenter)
         layout.addWidget(name)
         
-        version = QLabel("Version 1.0.1")
+        version = QLabel("Version 1.0.0")
         version.setStyleSheet("font-size: 14px; color: #888; margin-bottom: 10px;")
         version.setAlignment(Qt.AlignCenter)
         layout.addWidget(version)
@@ -242,8 +242,8 @@ class SystemSettingsDialog(QDialog):
         info_layout.setHorizontalSpacing(10)
         
         # 定义样式
-        label_style = "font-family: 'Microsoft YaHei'; font-size: 14px; color: #000; font-weight: bold;"
-        value_style = "font-family: 'Microsoft YaHei'; font-size: 14px; color: #555;"
+        label_style = "font-family: 'Microsoft YaHei'; font-size: 15px; color: #000; font-weight: bold;"
+        value_style = "font-family: 'Microsoft YaHei'; font-size: 15px; color: #555;"
         
         # 第一行
         lbl_unit = QLabel("单位：")
