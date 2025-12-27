@@ -1,0 +1,264 @@
+/* 全局设置 */
+* {
+    font-family: "SF Pro Text", "Segoe UI", "Helvetica Neue", "Microsoft YaHei", sans-serif;
+    outline: none;
+}
+
+/* 主窗口背景 */
+QMainWindow, QWidget#CentralWidget {
+    background-color: #F5F5F7; /* Apple System Gray 6 */
+}
+
+/* 侧边栏 */
+QFrame#Sidebar {
+    background-color: #FFFFFF;
+    border-right: 1px solid #E5E5EA;
+}
+
+/* 侧边栏按钮 */
+QPushButton#SidebarButton {
+    background-color: transparent;
+    border: none;
+    text-align: left;
+    padding: 12px 20px;
+    font-size: 15px;
+    font-weight: 500;
+    color: #1D1D1F;
+    border-radius: 8px;
+}
+
+QPushButton#SidebarButton:hover {
+    background-color: #F2F2F7;
+}
+
+QPushButton#SidebarButton:checked {
+    background-color: #E5F1FB;
+    color: #007AFF;
+    font-weight: 600;
+}
+
+/* 内容卡片 (白色背景，圆角，阴影) */
+QWidget#ContentCard {
+    background-color: #FFFFFF;
+    border-radius: 16px;
+    border: 1px solid #E5E5EA; /* Apple System Gray 5 */
+}
+
+/* 标题样式 */
+QLabel#TitleLabel {
+    font-size: 24px;
+    font-weight: 700;
+    color: #1D1D1F;
+    margin-bottom: 10px;
+}
+
+QLabel#SubtitleLabel {
+    font-size: 15px;
+    color: #86868B;
+}
+
+/* 按钮基础样式 */
+QPushButton {
+    background-color: #FFFFFF;
+    border: 1px solid #D1D1D6; /* Apple System Gray 4 */
+    border-radius: 8px;
+    color: #1D1D1F;
+    padding: 8px 18px;
+    font-size: 14px;
+    font-weight: 500;
+    min-height: 24px;
+}
+
+QPushButton:hover {
+    background-color: #F2F2F7;
+    border-color: #C7C7CC;
+}
+
+QPushButton:pressed {
+    background-color: #E5E5EA;
+}
+
+/* 主要操作按钮 (蓝色) - 如：保存、确认 */
+QPushButton[class="primary"] {
+    background-color: #007AFF; /* Apple System Blue */
+    color: white;
+    border: 1px solid #007AFF;
+    font-weight: 600;
+    font-size: 14px;
+    padding: 10px 24px;
+    border-radius: 10px;
+}
+
+QPushButton[class="primary"]:hover {
+    background-color: #0071EB;
+    border-color: #0071EB;
+}
+
+QPushButton[class="primary"]:pressed {
+    background-color: #0062CC;
+    border-color: #0062CC;
+}
+
+/* 成功/特殊操作按钮 (绿色) - 如：一键自动排班 */
+QPushButton[class="success"] {
+    background-color: #34C759; /* Apple System Green */
+    color: white;
+    border: 1px solid #34C759;
+    font-weight: 600;
+    font-size: 16px;
+    padding: 12px 28px;
+    border-radius: 12px; /* 稍微更圆润 */
+    min-width: 140px;
+}
+
+QPushButton[class="success"]:hover {
+    background-color: #30B753;
+    border-color: #30B753;
+}
+
+QPushButton[class="success"]:pressed {
+    background-color: #2DA84E;
+    border-color: #2DA84E;
+}
+
+/* 危险操作按钮 (红色) - 如：清空 */
+QPushButton[class="danger"] {
+    background-color: #FF3B30; /* Apple System Red */
+    color: white;
+    border: 1px solid #FF3B30;
+}
+
+QPushButton[class="danger"]:hover {
+    background-color: #E6352B;
+    border-color: #E6352B;
+}
+
+/* 输入框 */
+QLineEdit, QSpinBox, QDateEdit, QComboBox {
+    background-color: #FFFFFF;
+    border: 1px solid #D1D1D6;
+    border-radius: 8px;
+    padding: 8px 12px;
+    font-size: 14px;
+    color: #1D1D1F;
+    selection-background-color: #007AFF;
+}
+
+QLineEdit:focus, QSpinBox:focus, QDateEdit:focus, QComboBox:focus {
+    border: 1px solid #007AFF;
+    background-color: #FFFFFF;
+}
+
+/* 列表控件 (StaffPanel) */
+QListWidget {
+    background-color: #FFFFFF;
+    border: 1px solid #E5E5EA;
+    border-radius: 10px;
+    outline: none;
+    padding: 8px;
+}
+
+QListWidget::item {
+    height: 40px;
+    padding: 0 10px;
+    border-radius: 6px;
+    margin-bottom: 4px;
+    color: #1D1D1F;
+    font-size: 14px;
+}
+
+QListWidget::item:hover {
+    background-color: #F2F2F7;
+}
+
+QListWidget::item:selected {
+    background-color: #E5F1FB;
+    color: #007AFF;
+    font-weight: 600;
+}
+
+/* 日历头部按钮 (透明背景) */
+QPushButton#CalendarHeaderBtn {
+    background-color: transparent;
+    border: none;
+    color: #007AFF;
+    font-size: 16px;
+    font-weight: 600;
+    padding: 6px 14px;
+}
+
+QPushButton#CalendarHeaderBtn:hover {
+    background-color: #F2F2F7;
+    border-radius: 8px;
+}
+
+/* 日历月份标题 */
+QLabel#CalendarMonthLabel {
+    font-size: 20px;
+    font-weight: 700;
+    color: #1D1D1F;
+}
+
+/* 表格 (SettingsView) */
+QTableWidget {
+    background-color: #FFFFFF;
+    border: 1px solid #E5E5EA;
+    border-radius: 10px;
+    gridline-color: #F5F5F7;
+    selection-background-color: #E5F1FB;
+    selection-color: #1D1D1F;
+    font-size: 14px;
+}
+
+QTableWidget::item {
+    padding: 8px;
+}
+
+QHeaderView::section {
+    background-color: #F5F5F7;
+    border: none;
+    border-bottom: 1px solid #E5E5EA;
+    padding: 8px;
+    font-weight: 600;
+    color: #86868B;
+    font-size: 13px;
+}
+
+/* 设置页面标题 */
+#SettingsTitle {
+    font-size: 24px; 
+    font-weight: 700; 
+    color: #1D1D1F;
+    margin-bottom: 20px;
+}
+
+/* 滚动条美化 */
+QScrollBar:vertical {
+    border: none;
+    background: transparent;
+    width: 10px;
+    margin: 0px 0px 0px 0px;
+}
+QScrollBar::handle:vertical {
+    background: #C7C7CC;
+    min-height: 20px;
+    border-radius: 5px;
+}
+QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
+    height: 0px;
+}
+
+QScrollBar:horizontal {
+    border: none;
+    background: transparent;
+    height: 10px;
+    margin: 0px 0px 0px 0px;
+}
+QScrollBar::handle:horizontal {
+    background: #C7C7CC;
+    min-width: 20px;
+    border-radius: 5px;
+}
+QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {
+    width: 0px;
+}
