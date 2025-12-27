@@ -1,8 +1,10 @@
 from PyQt5.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QTableWidget, QTableWidgetItem, 
                              QPushButton, QHeaderView, QInputDialog, QColorDialog, QMessageBox, QLabel, QSpinBox, QGroupBox,
                              QDialog, QTabWidget, QCalendarWidget, QCheckBox, QComboBox, QLineEdit, QFormLayout, QDialogButtonBox, QSpacerItem, QSizePolicy,
-                             QScrollArea, QGridLayout, QListWidget, QMenu, QAction)
+                             QScrollArea, QGridLayout, QListWidget, QMenu, QAction, QFileDialog, QProgressDialog)
 from PyQt5.QtCore import Qt, QLocale
+import openpyxl
+import random
 from src.models import User
 from src.db_manager import DBManager
 
@@ -33,9 +35,9 @@ class SettingsView(QWidget):
         self.search_input.setStyleSheet("padding: 5px; border-radius: 15px; border: 1px solid #ddd;")
         self.search_input.textChanged.connect(self.load_users)
         action_layout.addWidget(self.search_input)
-        
+
         action_layout.addStretch()
-        
+
         # Clear Preferences Button
         self.btn_clear_prefs = QPushButton("清除所有偏好")
         self.btn_clear_prefs.setCursor(Qt.PointingHandCursor)
@@ -55,6 +57,25 @@ class SettingsView(QWidget):
             }
         """)
         action_layout.addWidget(self.btn_clear_prefs)
+
+        # Excel Import Button (New)
+        self.btn_import = QPushButton(" Excel自动导入 ")
+        self.btn_import.setCursor(Qt.PointingHandCursor)
+        self.btn_import.clicked.connect(self.import_from_excel)
+        self.btn_import.setStyleSheet("""
+            QPushButton {
+                background-color: #34C759;
+                color: white;
+                border-radius: 6px;
+                padding: 6px 15px;
+                font-weight: bold;
+                margin-right: 10px;
+            }
+            QPushButton:hover {
+                background-color: #2da84e;
+            }
+        """)
+        action_layout.addWidget(self.btn_import)
 
         # Add User Button
         self.btn_add = QPushButton(" + 添加人员 ")
@@ -97,6 +118,8 @@ class SettingsView(QWidget):
         self.table.setSelectionBehavior(QTableWidget.SelectRows)
         self.table.setEditTriggers(QTableWidget.NoEditTriggers)
         self.table.setSortingEnabled(True) # Enable sorting
+        self.table.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.table.customContextMenuRequested.connect(self.show_context_menu)
         layout.addWidget(self.table)
         
         # Empty State Label
@@ -134,6 +157,40 @@ class SettingsView(QWidget):
         self.spin_count.setVisible(False) # Hidden but kept for reset_system logic if needed
 
         self.load_users()
+
+    def show_context_menu(self, pos):
+        """Show context menu on right click"""
+        item = self.table.itemAt(pos)
+        if not item:
+            return
+            
+        row = item.row()
+        # Get user from the first column item (where we stored it)
+        user_item = self.table.item(row, 0)
+        if not user_item:
+            return
+            
+        user = user_item.data(Qt.UserRole)
+        if not user:
+            return
+            
+        menu = QMenu(self)
+        
+        # Add actions
+        delete_action = QAction("删除人员", self)
+        delete_action.triggered.connect(lambda: self.delete_user(user))
+        menu.addAction(delete_action)
+        
+        # Optional: Add other actions like Edit or Preferences
+        edit_action = QAction("编辑人员", self)
+        edit_action.triggered.connect(lambda: self.edit_user(user))
+        menu.addAction(edit_action)
+        
+        pref_action = QAction("偏好设置", self)
+        pref_action.triggered.connect(lambda: self.edit_preferences(user))
+        menu.addAction(pref_action)
+        
+        menu.exec_(self.table.viewport().mapToGlobal(pos))
 
     def load_users(self):
         # Disable sorting while loading to prevent artifacts
@@ -250,6 +307,205 @@ class SettingsView(QWidget):
                 QMessageBox.information(self, "成功", "所有偏好设置已清除。")
             else:
                 QMessageBox.warning(self, "失败", "清除偏好设置失败，请重试。")
+
+    def import_from_excel(self):
+        """Import users from Excel file with smart column recognition"""
+        file_path, _ = QFileDialog.getOpenFileName(
+            self, "选择人员信息表", "", "Excel Files (*.xlsx *.xls)"
+        )
+        
+        if not file_path:
+            return
+            
+        try:
+            wb = openpyxl.load_workbook(file_path, data_only=True)
+            sheet = wb.active
+            
+            # 1. Identify Header Row
+            header_row_idx = None
+            column_map = {}
+            
+            # Keywords for column mapping
+            keywords = {
+                'code': ['id', 'code', '编号', '工号', '代码'],
+                'name': ['姓名', '名字', 'name'],
+                'position': ['职务', '职位', '岗位', 'role', 'position'],
+                'contact': ['联系方式', '电话', '手机', 'contact', 'phone', 'tel'],
+                'color': ['颜色', 'color'],
+                'priority': ['优先等级', '等级', '员工类型', 'priority', 'level', 'type']
+            }
+            
+            # Scan first 10 rows for headers
+            for r in range(1, min(11, sheet.max_row + 1)):
+                row_values = [str(sheet.cell(row=r, column=c).value or "").strip().lower() for c in range(1, sheet.max_column + 1)]
+                
+                # Check if this row looks like a header (contains at least 'name' or 'code')
+                matches = 0
+                temp_map = {}
+                
+                for col_idx, cell_val in enumerate(row_values):
+                    # Check against keywords
+                    for key, words in keywords.items():
+                        if any(w in cell_val for w in words):
+                            temp_map[key] = col_idx + 1 # 1-based column index
+                            break
+                            
+                if 'name' in temp_map or 'code' in temp_map:
+                    if len(temp_map) >= 2: # At least 2 columns matched
+                        header_row_idx = r
+                        column_map = temp_map
+                        break
+            
+            if not header_row_idx:
+                QMessageBox.warning(self, "识别失败", "无法识别表头，请确保表格包含'姓名'、'工号'等列名。")
+                return
+                
+            # 2. Process Data Rows
+            success_count = 0
+            fail_count = 0
+            errors = []
+            
+            # Pre-fetch existing codes to avoid duplicates
+            existing_codes = {u.code.strip().upper() for u in self.db_manager.get_all_users()}
+            
+            # Pre-scan Excel for explicit codes to ensure generator doesn't conflict
+            excel_explicit_codes = set()
+            for r in range(header_row_idx + 1, sheet.max_row + 1):
+                if 'code' in column_map:
+                    val = sheet.cell(row=r, column=column_map['code']).value
+                    if val:
+                        code_str = str(val).strip().upper()
+                        if code_str:
+                            excel_explicit_codes.add(code_str)
+                            
+            used_codes = existing_codes.union(excel_explicit_codes)
+            
+            # Helper to generate random color
+            def generate_random_color():
+                """Generate a random pleasing color"""
+                # Generate RGB values ensuring they aren't too dark or too light
+                r = random.randint(60, 220)
+                g = random.randint(60, 220)
+                b = random.randint(60, 220)
+                return f"#{r:02X}{g:02X}{b:02X}"
+
+            # Helper to generate next available code
+            def generate_next_code():
+                # Try single letters A-Z
+                for i in range(26):
+                    c = chr(65 + i)
+                    if c not in used_codes:
+                        used_codes.add(c)
+                        return c
+                # Try double letters AA-ZZ
+                for i in range(26):
+                    for j in range(26):
+                        c = chr(65 + i) + chr(65 + j)
+                        if c not in used_codes:
+                            used_codes.add(c)
+                            return c
+                # Fallback numeric
+                idx = 1
+                while True:
+                    c = f"U{idx}"
+                    if c not in used_codes:
+                        used_codes.add(c)
+                        return c
+                    idx += 1
+            
+            # Progress Dialog
+            progress = QProgressDialog("正在导入数据...", "取消", 0, sheet.max_row - header_row_idx, self)
+            progress.setWindowModality(Qt.WindowModal)
+            
+            for i, r in enumerate(range(header_row_idx + 1, sheet.max_row + 1)):
+                if progress.wasCanceled():
+                    break
+                
+                progress.setValue(i)
+                
+                # Extract values
+                def get_val(key):
+                    if key in column_map:
+                        val = sheet.cell(row=r, column=column_map[key]).value
+                        return str(val).strip() if val is not None else None
+                    return None
+                
+                code = get_val('code')
+                name = get_val('name')
+                
+                # Skip empty rows (neither name nor code)
+                if not code and not name:
+                    continue
+                    
+                # Auto-generate ID if missing
+                if not code:
+                     code = generate_next_code()
+                     # If name is also missing (should be caught above), but double check
+                     if not name:
+                         name = f"员工{code}"
+                
+                position = get_val('position')
+                contact = get_val('contact')
+                color = get_val('color')
+                if not color:
+                    color = generate_random_color()
+                priority_val = get_val('priority')
+                
+                # Parse priority
+                prefs = {}
+                if priority_val:
+                    if "一" in priority_val or "1" in priority_val:
+                        prefs["employee_type"] = "一级"
+                    elif "二" in priority_val or "2" in priority_val:
+                        prefs["employee_type"] = "二级"
+                    elif "三" in priority_val or "3" in priority_val:
+                        prefs["employee_type"] = "三级"
+                    else:
+                         prefs["employee_type"] = "一级" # Default
+                
+                # Add to DB
+                user, msg = self.db_manager.add_user(
+                    code=code,
+                    name=name,
+                    position=position,
+                    contact=contact,
+                    color=color,
+                    preferences=prefs
+                )
+                
+                if user:
+                    success_count += 1
+                else:
+                    # If it failed because ID exists, maybe update?
+                    # "员工代码(ID)已存在"
+                    if "存在" in msg:
+                        # Update logic could go here if requested
+                        # For now, just report error
+                        fail_count += 1
+                        errors.append(f"行 {r} ({name}): {msg}")
+                    else:
+                        fail_count += 1
+                        errors.append(f"行 {r} ({name}): {msg}")
+            
+            progress.setValue(sheet.max_row - header_row_idx)
+            
+            # Reload UI
+            self.users = self.db_manager.get_all_users()
+            self.load_users()
+            if hasattr(self.main_window, 'reload_data'):
+                self.main_window.reload_data()
+                
+            # Report
+            if fail_count == 0:
+                QMessageBox.information(self, "导入完成", f"成功导入 {success_count} 条数据。")
+            else:
+                err_msg = "\n".join(errors[:10])
+                if len(errors) > 10:
+                    err_msg += "\n..."
+                QMessageBox.warning(self, "导入完成 (有错误)", f"成功: {success_count}\n失败: {fail_count}\n\n错误详情:\n{err_msg}")
+                
+        except Exception as e:
+            QMessageBox.critical(self, "导入错误", f"读取文件时发生错误: {str(e)}")
 
     def add_user(self):
         dialog = UserEditDialog(parent=self)

@@ -87,6 +87,11 @@ class MainWindow(QMainWindow):
         self.setWindowTitle("智能排班系统 V1.0.0")
         self.resize(1400, 900)
         
+        # Set Window Icon
+        import os
+        if os.path.exists("resources/icon.png"):
+            self.setWindowIcon(QIcon("resources/icon.png"))
+        
         # Init DB
         self.db_manager = DBManager()
         self.users = self.db_manager.get_all_users()
@@ -283,7 +288,7 @@ class MainWindow(QMainWindow):
         line.setFrameShadow(QFrame.Sunken)
         line.setStyleSheet("background-color: #E0E0E0;")
         line.setFixedHeight(24)
-        layout.addWidget(line)
+        layout.addWidget(line, 0, Qt.AlignVCenter)
         
         # --- Global Navigation (Stats, Settings) ---
         # Styled as top-right buttons
@@ -440,6 +445,12 @@ class MainWindow(QMainWindow):
             self.show_custom_message("成功", "本月排班已清除", QMessageBox.Information)
 
     def auto_schedule_range(self, target_week_starts, label_text):
+        if not self.users:
+            reply = QMessageBox.warning(self, "提示", "当前人员列表为空，请前往录入。", QMessageBox.Ok)
+            if reply == QMessageBox.Ok:
+                self.switch_view(1)  # 跳转到人员管理界面
+            return
+
         if not target_week_starts:
             QMessageBox.warning(self, "提示", "所选时间范围内没有需要排班的周。")
             return

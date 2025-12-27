@@ -219,7 +219,7 @@ class SystemSettingsDialog(QDialog):
         name.setAlignment(Qt.AlignCenter)
         layout.addWidget(name)
         
-        version = QLabel("Version 1.0.0")
+        version = QLabel("Version 1.0.3")
         version.setStyleSheet("font-size: 14px; color: #888; margin-bottom: 10px;")
         version.setAlignment(Qt.AlignCenter)
         layout.addWidget(version)
@@ -298,6 +298,12 @@ class SystemSettingsDialog(QDialog):
         info_layout.setColumnStretch(1, 1)
         
         layout.addWidget(info_container)
+
+        # Contact Info
+        contact_label = QLabel("通讯地址：广东省汕头市汕头站水电给水车间\n联系方式：电话:19119383440  微信：yh19119383440")
+        contact_label.setStyleSheet("margin-top: 15px; color: #333; font-size: 13px; font-weight: bold;")
+        contact_label.setAlignment(Qt.AlignCenter)
+        layout.addWidget(contact_label)
         
         desc = QLabel("为您提供最智能、高效的团队排班解决方案。")
         desc.setStyleSheet("margin-top: 15px; color: #888; font-size: 12px;")

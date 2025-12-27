@@ -8,6 +8,7 @@ sys.path.append(os.path.join(os.path.dirname(__file__), 'src'))
 from src.db_manager import DBManager
 from src.models import User, Schedule
 from src.consts import GroupType
+import random
 
 def generate_code(index):
     """Generate code like A, B... Z, AA, AB..."""
@@ -15,6 +16,15 @@ def generate_code(index):
         return chr(65 + index)
     else:
         return chr(65 + (index // 26) - 1) + chr(65 + (index % 26))
+
+def generate_random_color():
+    """Generate a random pleasing color"""
+    # Generate RGB values ensuring they aren't too dark or too light (ghostly)
+    # Range 60-220 usually provides good visibility and variety
+    r = random.randint(60, 220)
+    g = random.randint(60, 220)
+    b = random.randint(60, 220)
+    return f"#{r:02X}{g:02X}{b:02X}"
 
 def import_data():
     file_path = r"c:\Users\74927\Desktop\排班系统\项目相关资源\电力二工区人员信息 （最新）.xlsx"
@@ -33,13 +43,6 @@ def import_data():
 
     db = DBManager()
     
-    # Pre-defined colors
-    colors = [
-        "#FF6B6B", "#4ECDC4", "#45B7D1", "#96CEB4", "#FFEEAD",
-        "#D4A5A5", "#9B59B6", "#3498DB", "#F1C40F", "#E67E22",
-        "#2ECC71", "#1ABC9C", "#9B59B6", "#34495E", "#16A085"
-    ]
-
     with db.session_scope() as session:
         # Clear existing data
         print("Clearing existing database...")
@@ -59,7 +62,7 @@ def import_data():
             contact = str(row.get('电话号码', '')).strip() if not pd.isna(row.get('电话号码')) else ""
             
             code = generate_code(count)
-            color = colors[count % len(colors)]
+            color = generate_random_color()
             
             user = User(
                 code=code,
