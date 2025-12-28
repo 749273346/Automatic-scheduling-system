@@ -291,3 +291,13 @@ class DBManager:
         session.close()
         # Convert date strings/objects to date objects if needed (SQLAlchemy returns date objects for Date type)
         return dict(results)
+
+    def get_users_on_duty_between(self, start_date, end_date):
+        """获取指定日期范围内有排班的用户Code列表"""
+        session = self.get_session()
+        results = session.query(User.code)\
+            .join(Schedule, User.id == Schedule.user_id)\
+            .filter(Schedule.date >= start_date, Schedule.date <= end_date)\
+            .distinct().all()
+        session.close()
+        return [r[0] for r in results]

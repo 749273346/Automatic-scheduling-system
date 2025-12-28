@@ -6,11 +6,15 @@ from src.consts import GroupType, WeekDay, MAX_SHIFTS_PER_WEEK, SHIFTS_PER_DAY
 from src.models import User, Schedule
 
 class Scheduler:
-    def __init__(self, users: List[User], start_date: datetime.date, history_counts: Dict[str, int] = None, last_duty_dates: Dict[str, datetime.date] = None):
+    def __init__(self, users: List[User], start_date: datetime.date, history_counts: Dict[str, int] = None, last_duty_dates: Dict[str, datetime.date] = None, last_weekend_duty: Dict[str, bool] = None):
         self.users = users
         self.start_date = start_date
         self.history_counts = history_counts or defaultdict(int)
         self.last_duty_dates = last_duty_dates or {}
+        # New parameter: last_weekend_duty
+        # Maps user_code -> True if they worked LAST weekend (Sat or Sun)
+        self.last_weekend_duty = last_weekend_duty or {}
+        
         # 确保 start_date 是周一
         if self.start_date.weekday() != 0:
             raise ValueError("Start date must be a Monday")
@@ -92,97 +96,78 @@ class Scheduler:
         return 3 # Default to Level 3
 
     def check_constraints(self, user: User, date: datetime.date, strict: bool = True) -> bool:
-        """检查约束
-        :param strict: 如果为 True，则严格检查所有硬约束和 Level 1 偏好
         """
-        # 1. 检查日期可用性 (Hard - Blackout Dates & Legacy Groups)
-        if not self.is_available(user, date):
+        检查用户是否能被安排在指定日期
+        规则：
+        1. 每周值班不超过3次 (Rule 1)
+        2. 员工等级限制 (Rule 2 & 3)
+           - 一级员工偏好必须满足
+           - 三级员工只能在偏好日轮班 (Rule 3 in _apply_rotation_rules, but generalized?)
+        3. 不可值班日期
+        4. 周末连班检查 (Rule 1 part 2: 如果安排周六，必须能安排周日)
+        """
+        prefs = user.preferences or {}
+        
+        # 0. 基础硬性限制：不可值班日期
+        unavailable = prefs.get("unavailable_dates", [])
+        date_str = date.strftime("%Y-%m-%d")
+        if date_str in unavailable:
             return False
+
+        # 1. 数量限制
+        # 注意：如果是周六，我们需要预判周日也排班，所以如果是周六，当前必须 <= MAX-2 (因为 Sat+Sun=2)
+        # 如果是周日，理论上必须是周六已排的人，这里只需检查 <= MAX
+        current_shifts = self.user_week_counts[user.code]
+        if date.weekday() == 5: # Saturday
+            if current_shifts + 2 > MAX_SHIFTS_PER_WEEK:
+                return False
             
-        # 2. 检查每周排班数量上限 (Hard)
-        if self.user_week_counts[user.code] >= MAX_SHIFTS_PER_WEEK:
-            return False
+            # 额外检查：如果排了周六，必须能排周日
+            sunday_date = date + datetime.timedelta(days=1)
+            sunday_str = sunday_date.strftime("%Y-%m-%d")
+            if sunday_str in unavailable:
+                return False
             
-        # 3. 检查当天是否已经排了该用户 (Hard)
+            # 检查周日是否符合偏好 (Level 1)
+            emp_type = prefs.get("employee_type", "一级")
+            if emp_type == "一级":
+                preferred_days = prefs.get("preferred_weekdays", [])
+                if preferred_days and 6 not in preferred_days:
+                    return False
+                    
+        elif date.weekday() == 6: # Sunday
+             if current_shifts >= MAX_SHIFTS_PER_WEEK:
+                return False
+        else:
+            if current_shifts >= MAX_SHIFTS_PER_WEEK:
+                return False
+
+        # 2. 检查当天是否已经排了该用户
         if user in self.schedule_result[date]:
             return False
 
-        # 优先级处理
-        priority = self.get_user_priority(user)
+        # 3. 员工等级与偏好 (Rule 2)
+        emp_type = prefs.get("employee_type", "一级")
+        preferred_days = prefs.get("preferred_weekdays", []) # [0, 1, 4...]
         
-        # 如果是 Level 1 (最高优先级)，其偏好被视为硬约束
-        # 仅在 strict 模式下，或者总是？用户要求 "一定是需要满足的" -> 总是视为 Hard
-        # 但是为了兼容 _backtrack 的 loose 模式（如果需要），我们可以让 loose 模式忽略它？
-        # 用户说 "只限于自动排班功能...如果无法满足...发出预警...原因"
-        # 这意味着我们应该首先尝试满足 Level 1 的偏好。如果失败，才报告。
-        # 所以我们将 Level 1 偏好视为 Hard Constraint。
+        # 一级员工：偏好必须满足 (Strict)
+        if emp_type == "一级":
+            if preferred_days and date.weekday() not in preferred_days:
+                return False
         
-        prefs = user.preferences if (user.preferences and isinstance(user.preferences, dict)) else {}
-        
-        # 4. 检查不期望的节假日 (Avoid Holidays)
+        # 4. 节假日回避 (Legacy/Optional)
         avoid_hols = prefs.get("avoid_holidays", [])
         if avoid_hols:
             hol_name = self._get_holiday_name(date)
             if hol_name and hol_name in avoid_hols:
-                # Level 1: Hard Constraint
-                if priority == 1:
-                    return False
-                # Level 2/3: Soft (handled in scoring, not here, unless strict mode forces all prefs?)
-                # Usually strict mode in backtracking means "enforce basic rules". 
-                # Let's keep soft constraints out of check_constraints for L2/L3 to allow filling slots.
-
-        # 5. 检查配对偏好 (Avoid Pairing)
-        current_users = self.schedule_result[date]
-        avoid_list = set(prefs.get("avoid_pairing", []))
-        
-        # (a) Check current user avoiding existing users
-        for existing_user in current_users:
-            if existing_user.code in avoid_list:
-                if priority == 1: return False
-
-        # (b) Check existing users avoiding current user
-        # Note: If existing user is Level 1, they must not be paired with avoided user
-        for existing_user in current_users:
-            existing_prefs = existing_user.preferences if (existing_user.preferences and isinstance(existing_user.preferences, dict)) else {}
-            existing_priority = self.get_user_priority(existing_user)
-            if user.code in existing_prefs.get("avoid_pairing", []):
-                if existing_priority == 1: return False
-                     
-        # 6. 检查偏好值班周期 (Preferred Cycle)
-        cycle = prefs.get("preferred_cycle", "无特定偏好")
-        last_date = self.last_duty_dates.get(user.code)
-        
-        if last_date and cycle != "无特定偏好":
-            if isinstance(last_date, str):
-                try:
-                    last_date = datetime.datetime.strptime(last_date, "%Y-%m-%d").date()
-                except ValueError:
-                    pass
-            
-            if isinstance(last_date, datetime.date):
-                days_diff = (date - last_date).days
-                violation = False
-                
-                if cycle == "每两周 (隔周)":
-                    last_week_start = self.start_date - datetime.timedelta(days=7)
-                    last_week_end = self.start_date - datetime.timedelta(days=1)
-                    if last_week_start <= last_date <= last_week_end:
-                        violation = True
-                        
-                elif cycle == "每月":
-                    if days_diff < 28:
-                        violation = True
-                
-                if violation and priority == 1:
+                if emp_type == "一级":
                     return False
 
-        # 7. 检查期望工作日 (Preferred Weekdays) - ONLY for Level 1
-        # 如果 Level 1 用户设置了期望工作日，则只能在这些日子工作 (Strict enforcement of positive constraint)
-        if priority == 1:
-            preferred_days = prefs.get("preferred_weekdays", [])
-            if preferred_days:
-                if date.weekday() not in preferred_days:
-                    return False
+        # 5. 周末冷却 (Hard Constraint in Strict Mode) - Rule 4
+        # "Do not appear" -> Strict prohibition if strict=True
+        if strict and date.weekday() >= 5:
+            if self.last_weekend_duty.get(user.code, False):
+                return False
 
         return True
 
@@ -220,6 +205,7 @@ class Scheduler:
         self.user_week_counts = initial_user_week_counts.copy()
         self._apply_fg_rules()
         self._apply_h_rules()
+        self._apply_rotation_rules()
         self.steps = 0
         
         if self._backtrack(dates, 0, 0, strict=True):
@@ -254,6 +240,7 @@ class Scheduler:
         
         self._apply_fg_rules()
         self._apply_h_rules()
+        self._apply_rotation_rules()
         self.steps = 0
         
         if self._backtrack(dates, 0, 0, strict=False):
@@ -319,6 +306,76 @@ class Scheduler:
             self.schedule_result[fri_date].append(target_user)
             self.user_week_counts[target_user.code] += 1
 
+    def _apply_rotation_rules(self):
+        """
+        应用定期轮班规则 (Periodic Rotation)
+        规则 3：轮班系统只有在该员工选择了在这天期望值班才能选择
+        """
+        processed = set()
+        
+        for user in self.users:
+            prefs = user.preferences or {}
+            rot_pref = prefs.get("periodic_rotation")
+            if not rot_pref:
+                continue
+            
+            partner_code = rot_pref.get("partner")
+            day_idx = rot_pref.get("day_idx")
+            parity = rot_pref.get("parity", "odd")
+            
+            if not partner_code or day_idx is None:
+                continue
+                
+            # Rule 3 Check: Must be in preferred_weekdays
+            preferred_days = prefs.get("preferred_weekdays", [])
+            if preferred_days and day_idx not in preferred_days:
+                continue
+                
+            # Find partner user object
+            partner = next((u for u in self.users if u.code == partner_code), None)
+            if not partner:
+                continue
+            
+            # Check partner preference too? (Maybe symmetric?)
+            # Usually rotation is set up by one person or mutually. 
+            # If partner didn't prefer this day, should we force?
+            # User said "Employee selected...". Assume both must comply if they are to be scheduled.
+            partner_prefs = partner.preferences or {}
+            partner_preferred = partner_prefs.get("preferred_weekdays", [])
+            if partner_preferred and day_idx not in partner_preferred:
+                continue
+
+            # Determine target date
+            target_date = self.start_date + datetime.timedelta(days=day_idx)
+            
+            # Check if this rule for this date is already processed
+            pair_key = (target_date, tuple(sorted([user.code, partner.code])))
+            if pair_key in processed:
+                continue
+                
+            processed.add(pair_key)
+            
+            # Determine who is on duty
+            week_num = target_date.isocalendar()[1]
+            is_odd_week = (week_num % 2 != 0)
+            
+            selected_user = None
+            if parity == "odd":
+                selected_user = user if is_odd_week else partner
+            else: # even
+                selected_user = user if not is_odd_week else partner
+                
+            # Apply to schedule
+            # Check constraints first? Rotation usually overrides, but Level 1 constraint is HARD.
+            # If selected_user is Level 1, we already checked preferred_days above.
+            # Check max shifts?
+            if self.check_constraints(selected_user, target_date, strict=True):
+                if selected_user not in self.schedule_result[target_date]:
+                    # Check if slot available
+                    if len(self.schedule_result[target_date]) < SHIFTS_PER_DAY:
+                        self.schedule_result[target_date].append(selected_user)
+                        self.user_week_counts[selected_user.code] += 1
+
     def _backtrack(self, dates: List[datetime.date], day_idx: int, slot_idx: int, strict: bool) -> bool:
         """
         递归回溯填充
@@ -373,42 +430,75 @@ class Scheduler:
         random.shuffle(candidates) 
         
         def calculate_score(user):
-            score = 0
-            prefs = user.preferences if (user.preferences and isinstance(user.preferences, dict)) else {}
-            priority = self.get_user_priority(user)
+            """
+            计算候选人得分，分数越低越优先
+            考虑因素：
+            1. 总排班数均衡 (History + Current) (Rule 5)
+            2. 员工等级 (二级 > 三级) (Rule 2)
+            3. 偏好匹配 (Bonus)
+            4. 周末避免连排 (Penalty) (Rule 4)
+            """
+            score = 0.0
+            code = user.code
+            prefs = user.preferences or {}
             
-            # Level 1 Priority
-            if priority == 1:
-                score -= 1000
-                # Preferred weekday bonus
-                if current_date.weekday() in prefs.get("preferred_weekdays", []):
-                    score -= 500
-            elif priority == 2:
-                score -= 500
-                # Soft preference matching
-                if current_date.weekday() in prefs.get("preferred_weekdays", []):
-                    score -= 200
-            else: # Level 3
-                if current_date.weekday() in prefs.get("preferred_weekdays", []):
-                    score -= 100
+            # 1. 均衡性 (Balance)
+            # Rule 5: Balance total shifts over time
+            total_shifts = self.history_counts[code] + self.user_week_counts[code]
+            score += total_shifts * 1000 
             
-            # Penalize constraint violations for Level 2/3 (since they are soft)
-            # Avoid holidays
-            if priority > 1:
-                avoid_hols = prefs.get("avoid_holidays", [])
-                if avoid_hols:
-                    hol_name = self._get_holiday_name(current_date)
-                    if hol_name and hol_name in avoid_hols:
-                        score += 500 # Penalty
+            # 2. 员工等级优先度 (Priority)
+            # 一级员工在 check_constraints 已过滤，这里主要区分二级和三级
+            # 二级比三级优先 -> 二级分数更低
+            emp_type = prefs.get("employee_type", "一级")
+            if emp_type == "二级":
+                score -= 100
+            elif emp_type == "三级":
+                score += 0 # No bonus
+            elif emp_type == "一级":
+                # Level 1 usually hard restricted, but if they are candidate, prioritize them?
+                # Actually, if Level 1 is restricted to preferred days, we should prioritize giving them shifts on those days if available?
+                # Maybe neutral.
+                pass
                 
-                # Avoid pairing (simplified check against currently scheduled)
-                current_users = self.schedule_result[current_date]
-                avoid_list = set(prefs.get("avoid_pairing", []))
-                for existing_user in current_users:
-                    if existing_user.code in avoid_list:
-                        score += 500
+            # 3. 偏好匹配 (Preference Bonus)
+            # 对于二级/三级员工，尽量满足偏好
+            preferred_days = prefs.get("preferred_weekdays", [])
+            if preferred_days and current_date.weekday() in preferred_days:
+                score -= 500 # 给予很大优惠，使其优先于无偏好的人
                 
-            return (score, self.user_week_counts[user.code], self.history_counts.get(user.code, 0))
+            # 4. 周末冷却 (Weekend Fairness) - Rule 4
+            # "If arranged to weekend... try not to arrange again"
+            if current_date.weekday() >= 5:
+                # New Logic using last_weekend_duty
+                if self.last_weekend_duty.get(code, False):
+                     # Massive Penalty to enforce "Try not to" as strongly as possible
+                     # Unless they are the ONLY candidates, they should lose to anyone else.
+                     # Base balance diff might be ~1000-2000. 
+                     # Give 50000 to be safe.
+                     score += 50000 
+                
+                # Also keep the old logic for fallback (if last_weekend_duty not provided or for gap checks)
+                last_duty = self.last_duty_dates.get(code)
+                if last_duty and isinstance(last_duty, datetime.date):
+                    days_diff = (current_date - last_duty).days
+                    # If they worked recently (e.g. yesterday or day before), penalty
+                    # But if it's the SAME weekend (e.g. Sat -> Sun), we WANT them (for consecutive rule)
+                    # Check logic:
+                    # If current is Sat(5): Last duty being recent is bad (unless we want consecutive days? No, we want distinct weekends)
+                    # If current is Sun(6): Last duty SHOULD be Sat(5) (yesterday).
+                    
+                    if current_date.weekday() == 6: # Sunday
+                         # If last duty was Sat (1 day ago), that is GOOD (Rule 1).
+                         # We actually enforce this in candidates list logic.
+                         # So here we don't need to penalize Sat->Sun.
+                         pass
+                    elif current_date.weekday() == 5: # Saturday
+                         # If last duty was recent (e.g. Friday), maybe penalty?
+                         # User didn't specify.
+                         pass
+            
+            return score
 
         candidates.sort(key=calculate_score)
 

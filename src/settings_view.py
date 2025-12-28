@@ -160,37 +160,93 @@ class SettingsView(QWidget):
 
     def show_context_menu(self, pos):
         """Show context menu on right click"""
+        # Get selected rows
+        selected_rows = sorted(set(index.row() for index in self.table.selectionModel().selectedRows()))
+        
         item = self.table.itemAt(pos)
-        if not item:
-            return
-            
-        row = item.row()
-        # Get user from the first column item (where we stored it)
-        user_item = self.table.item(row, 0)
-        if not user_item:
-            return
-            
-        user = user_item.data(Qt.UserRole)
-        if not user:
-            return
-            
+        
+        # If right-click happens on an item not in current selection, treat it as single item action
+        # (unless user Ctrl+Click, but right click usually implies context of "what is under cursor" or "current selection")
+        # Standard behavior: If click is inside selection, apply to selection. If outside, apply to that item (and usually select it).
+        
+        clicked_on_selection = False
+        if item:
+            if item.row() in selected_rows:
+                clicked_on_selection = True
+        
         menu = QMenu(self)
         
-        # Add actions
-        delete_action = QAction("删除人员", self)
-        delete_action.triggered.connect(lambda: self.delete_user(user))
-        menu.addAction(delete_action)
-        
-        # Optional: Add other actions like Edit or Preferences
-        edit_action = QAction("编辑人员", self)
-        edit_action.triggered.connect(lambda: self.edit_user(user))
-        menu.addAction(edit_action)
-        
-        pref_action = QAction("偏好设置", self)
-        pref_action.triggered.connect(lambda: self.edit_preferences(user))
-        menu.addAction(pref_action)
-        
+        # Batch Operation if multiple rows selected AND clicked on selection
+        if len(selected_rows) > 1 and clicked_on_selection:
+            delete_action = QAction(f"批量删除 ({len(selected_rows)} 人)", self)
+            delete_action.triggered.connect(lambda: self.delete_selected_users(selected_rows))
+            menu.addAction(delete_action)
+            
+        else:
+            # Single item operation
+            if not item:
+                return
+                
+            row = item.row()
+            user_item = self.table.item(row, 0)
+            if not user_item:
+                return
+                
+            user = user_item.data(Qt.UserRole)
+            if not user:
+                return
+            
+            delete_action = QAction("删除人员", self)
+            delete_action.triggered.connect(lambda: self.delete_user(user))
+            menu.addAction(delete_action)
+            
+            edit_action = QAction("编辑人员", self)
+            edit_action.triggered.connect(lambda: self.edit_user(user))
+            menu.addAction(edit_action)
+            
+            pref_action = QAction("偏好设置", self)
+            pref_action.triggered.connect(lambda: self.edit_preferences(user))
+            menu.addAction(pref_action)
+            
         menu.exec_(self.table.viewport().mapToGlobal(pos))
+
+    def delete_selected_users(self, rows):
+        """Delete multiple users"""
+        users_to_delete = []
+        for row in rows:
+            item = self.table.item(row, 0)
+            if item:
+                user = item.data(Qt.UserRole)
+                if user:
+                    users_to_delete.append(user)
+        
+        if not users_to_delete:
+            return
+
+        names = ", ".join([u.code for u in users_to_delete[:5]])
+        if len(users_to_delete) > 5:
+            names += " 等"
+            
+        reply = QMessageBox.question(self, "确认批量删除", 
+                                     f"确定要删除以下 {len(users_to_delete)} 位人员吗？\n{names}\n\n此操作不可恢复。",
+                                     QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+        
+        if reply == QMessageBox.Yes:
+            success_count = 0
+            # Use DB transaction if possible, or just loop
+            # Here we loop for simplicity as existing DBManager handles single deletes safely
+            for user in users_to_delete:
+                if self.db_manager.delete_user(user.id):
+                    success_count += 1
+            
+            if success_count > 0:
+                if hasattr(self.main_window, 'reload_data'):
+                    self.main_window.reload_data()
+                else:
+                    self.load_users() # Fallback
+                QMessageBox.information(self, "成功", f"成功删除 {success_count} 位人员")
+            else:
+                QMessageBox.warning(self, "失败", "删除失败")
 
     def load_users(self):
         # Disable sorting while loading to prevent artifacts
@@ -663,15 +719,18 @@ class PreferenceDialog(QDialog):
         tabs = QTabWidget()
         layout.addWidget(tabs)
         
-        # Tab 1: Blackout Dates
+        # Tab 1: Preferences (Cycle & Pairing)
+        self.tab_advanced = QWidget()
+        self.init_advanced_tab()
+        tabs.addTab(self.tab_advanced, "高级偏好")
+
+        # Tab 2: Blackout Dates
         self.tab_dates = QWidget()
         self.init_dates_tab()
         tabs.addTab(self.tab_dates, "不可值班日期")
         
-        # Tab 2: Preferences (Cycle & Pairing)
-        self.tab_advanced = QWidget()
-        self.init_advanced_tab()
-        tabs.addTab(self.tab_advanced, "高级偏好")
+        # Default to Advanced Preferences (Index 0)
+        tabs.setCurrentIndex(0)
         
         # Buttons
         btn_layout = QHBoxLayout()
@@ -795,39 +854,64 @@ class PreferenceDialog(QDialog):
             
         layout.addWidget(grp_holiday)
         
-        # 4. Pairing Avoidance (不期望与某人一起值班)
-        grp_pair = QGroupBox("4. 避免配对人员")
-        pair_layout = QVBoxLayout(grp_pair)
+        # 4. Periodic Rotation (定期轮班)
+        grp_rotation = QGroupBox("4. 定期轮班 (与他人轮流值班)")
+        rotation_layout = QFormLayout(grp_rotation)
         
-        self.avoid_checks = {}
-        avoid_list = set(self.preferences.get("avoid_pairing", []))
+        # Load existing rotation preference
+        # Structure: {"partner": "CODE", "day_idx": 4, "parity": "odd"} 
+        # parity: "odd" (1,3,5...) or "even" (2,4,6...)
+        rotation_pref = self.preferences.get("periodic_rotation", {})
         
-        # Scroll area for users
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setFixedHeight(150)
-        scroll_content = QWidget()
-        users_layout = QGridLayout(scroll_content)
+        # Partner Selector
+        self.combo_rotation_partner = QComboBox()
+        self.combo_rotation_partner.addItem("无 (不启用)", None)
         
-        col_count = 3
-        row = 0
-        col = 0
-        for u in self.all_users:
+        current_partner_code = rotation_pref.get("partner")
+        
+        sorted_users = sorted(self.all_users, key=lambda u: u.code)
+        for u in sorted_users:
             if u.id == self.user.id:
                 continue
-            chk = QCheckBox(f"{u.code} ({u.name or ''})")
-            if u.code in avoid_list:
-                chk.setChecked(True)
-            self.avoid_checks[u.code] = chk
-            users_layout.addWidget(chk, row, col)
-            col += 1
-            if col >= col_count:
-                col = 0
-                row += 1
+            self.combo_rotation_partner.addItem(f"{u.code} ({u.name or ''})", u.code)
+            
+        if current_partner_code:
+            idx = self.combo_rotation_partner.findData(current_partner_code)
+            if idx >= 0:
+                self.combo_rotation_partner.setCurrentIndex(idx)
+                
+        rotation_layout.addRow("轮班搭档:", self.combo_rotation_partner)
         
-        scroll.setWidget(scroll_content)
-        pair_layout.addWidget(scroll)
-        layout.addWidget(grp_pair)
+        # Day Selector
+        self.combo_rotation_day = QComboBox()
+        days = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"]
+        self.combo_rotation_day.addItems(days)
+        
+        current_day = rotation_pref.get("day_idx", 4) # Default Friday
+        if 0 <= current_day <= 6:
+            self.combo_rotation_day.setCurrentIndex(current_day)
+            
+        rotation_layout.addRow("轮班星期:", self.combo_rotation_day)
+        
+        # Parity Selector
+        self.combo_rotation_parity = QComboBox()
+        # odd = week 1, 3, 5...; even = week 2, 4, 6...
+        self.combo_rotation_parity.addItem("单周值班 (第1, 3, 5...周)", "odd")
+        self.combo_rotation_parity.addItem("双周值班 (第2, 4, 6...周)", "even")
+        
+        current_parity = rotation_pref.get("parity", "odd")
+        idx_parity = self.combo_rotation_parity.findData(current_parity)
+        if idx_parity >= 0:
+            self.combo_rotation_parity.setCurrentIndex(idx_parity)
+            
+        rotation_layout.addRow("我的班次:", self.combo_rotation_parity)
+        
+        # Explanation
+        lbl_rot_hint = QLabel("说明：设置后，您将与搭档在指定星期轮流值班。\n请确保搭档未设置冲突的轮班规则。")
+        lbl_rot_hint.setStyleSheet("color: gray; font-size: 11px;")
+        rotation_layout.addRow(lbl_rot_hint)
+        
+        layout.addWidget(grp_rotation)
         
         layout.addStretch()
 
@@ -852,13 +936,23 @@ class PreferenceDialog(QDialog):
                 holidays.append(name)
         prefs["avoid_holidays"] = holidays
         
-        # 4. Pairing
-        avoid_pairing = []
-        for code, chk in self.avoid_checks.items():
-            if chk.isChecked():
-                avoid_pairing.append(code)
-        prefs["avoid_pairing"] = avoid_pairing
+        # 4. Periodic Rotation
+        partner_code = self.combo_rotation_partner.currentData()
+        if partner_code:
+            prefs["periodic_rotation"] = {
+                "partner": partner_code,
+                "day_idx": self.combo_rotation_day.currentIndex(),
+                "parity": self.combo_rotation_parity.currentData()
+            }
+        else:
+            # If "None" is selected, remove the key if it exists
+            if "periodic_rotation" in prefs:
+                del prefs["periodic_rotation"]
         
+        # Remove legacy pairing key if it exists, as UI is gone
+        if "avoid_pairing" in prefs:
+            del prefs["avoid_pairing"]
+            
         return prefs
 
 class UserEditDialog(QDialog):

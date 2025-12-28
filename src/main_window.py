@@ -20,13 +20,14 @@ class SchedulerWorker(QThread):
     error = pyqtSignal(str)
     warning = pyqtSignal(str)
 
-    def __init__(self, users, history_counts, last_duty_dates, existing_schedules, target_week_starts):
+    def __init__(self, users, history_counts, last_duty_dates, existing_schedules, target_week_starts, initial_last_weekend_duty=None):
         super().__init__()
         self.users = users
         self.history_counts = history_counts
         self.last_duty_dates = last_duty_dates
         self.existing_schedules = existing_schedules
         self.target_week_starts = target_week_starts
+        self.initial_last_weekend_duty = initial_last_weekend_duty or {}
 
     def run(self):
         try:
@@ -36,6 +37,10 @@ class SchedulerWorker(QThread):
             all_new_schedules = []
             current_history = self.history_counts.copy()
             current_last_duty = self.last_duty_dates.copy()
+            
+            # Track if user worked last weekend (Sat or Sun)
+            current_last_weekend_duty = self.initial_last_weekend_duty.copy()
+            
             warnings = []
             
             # 遍历指定的所有周起始日期
@@ -47,7 +52,7 @@ class SchedulerWorker(QThread):
                     if week_start <= s.date < week_end
                 ]
                 
-                scheduler = Scheduler(self.users, week_start, current_history, current_last_duty)
+                scheduler = Scheduler(self.users, week_start, current_history, current_last_duty, current_last_weekend_duty)
                 week_new_schedules = scheduler.generate_schedule(week_existing)
                 
                 if scheduler.last_error:
@@ -60,9 +65,19 @@ class SchedulerWorker(QThread):
                 all_new_schedules.extend(week_new_schedules)
                 
                 # Update history for next iteration
+                # Also update last_weekend_duty for next week
+                
+                # Reset weekend duty for next iteration
+                next_weekend_duty = {}
+                
                 for s in week_new_schedules:
                     current_history[s.user.code] = current_history.get(s.user.code, 0) + 1
                     current_last_duty[s.user.code] = s.date
+                    
+                    if s.date.weekday() >= 5:
+                        next_weekend_duty[s.user.code] = True
+                        
+                current_last_weekend_duty = next_weekend_duty
 
             if warnings:
                 self.warning.emit("\n\n".join(warnings))
@@ -84,7 +99,7 @@ class SidebarButton(QPushButton):
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("智能排班系统 V1.0.0")
+        self.setWindowTitle("智能排班系统 V1.0.4")
         self.resize(1400, 900)
         
         # Set Window Icon
@@ -459,6 +474,20 @@ class MainWindow(QMainWindow):
         history_counts = self.db_manager.get_history_counts()
         last_duty_dates = self.db_manager.get_last_duty_dates()
         
+        # Get Last Weekend Duty Status (for first week)
+        initial_last_weekend_duty = {}
+        if target_week_starts:
+             # Logic: Previous Weekend relative to First Target Week
+             # First Target Week Start is a Monday.
+             # Previous Weekend is [Mon-2 days (Sat), Mon-1 day (Sun)]
+             start_monday = target_week_starts[0]
+             prev_sat = start_monday - datetime.timedelta(days=2)
+             prev_sun = start_monday - datetime.timedelta(days=1)
+             
+             weekend_users = self.db_manager.get_users_on_duty_between(prev_sat, prev_sun)
+             for u_code in weekend_users:
+                 initial_last_weekend_duty[u_code] = True
+        
         # Show progress dialog
         self.progress_dialog = QProgressDialog(f"正在生成排班方案 ({label_text})...", "取消", 0, 0, self)
         self.progress_dialog.setWindowModality(Qt.WindowModal)
@@ -466,7 +495,7 @@ class MainWindow(QMainWindow):
         self.progress_dialog.show()
 
         # Start worker thread
-        self.worker = SchedulerWorker(self.users, history_counts, last_duty_dates, self.schedules, target_week_starts)
+        self.worker = SchedulerWorker(self.users, history_counts, last_duty_dates, self.schedules, target_week_starts, initial_last_weekend_duty)
         self.worker.finished.connect(self.on_schedule_finished)
         self.worker.error.connect(self.on_schedule_error)
         self.worker.warning.connect(self.on_schedule_warning)

@@ -8,7 +8,7 @@ import matplotlib.pyplot as plt
 plt.rcParams['font.sans-serif'] = ['Microsoft YaHei', 'SimHei', 'Arial']
 plt.rcParams['axes.unicode_minus'] = False
 
-from PyQt5.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QLabel, QComboBox
+from PyQt5.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QLabel, QComboBox, QPushButton
 from PyQt5.QtCore import Qt
 import datetime
 
@@ -25,6 +25,9 @@ class StatsView(QWidget):
         
         # 控制栏
         self._init_controls()
+
+        # 导航栏 (新增)
+        self._init_nav_bar()
         
         # 图表区域
         self.figure = Figure(figsize=(8, 6), dpi=100)
@@ -72,12 +75,79 @@ class StatsView(QWidget):
         
         self.combo_month = QComboBox()
         self.combo_month.addItems([str(i) for i in range(1, 13)])
+        self.combo_month.setMaxVisibleItems(12) # 确保显示所有月份，避免滚动或省略
         self.combo_month.setCurrentText(str(datetime.date.today().month))
         self.combo_month.currentIndexChanged.connect(self.refresh_charts)
         controls_layout.addWidget(self.combo_month)
         
         controls_layout.addStretch()
         self.layout.addLayout(controls_layout)
+
+    def _init_nav_bar(self):
+        nav_layout = QHBoxLayout()
+        nav_layout.setContentsMargins(0, 10, 0, 0)
+        
+        # Previous Button
+        self.btn_prev = QPushButton("<")
+        self.btn_prev.setFixedWidth(40)
+        self.btn_prev.clicked.connect(self.on_prev_click)
+        nav_layout.addWidget(self.btn_prev)
+        
+        # Title Label
+        self.lbl_chart_title = QLabel("")
+        self.lbl_chart_title.setAlignment(Qt.AlignCenter)
+        self.lbl_chart_title.setStyleSheet("font-size: 16px; font-weight: bold;")
+        nav_layout.addWidget(self.lbl_chart_title)
+        
+        # Next Button
+        self.btn_next = QPushButton(">")
+        self.btn_next.setFixedWidth(40)
+        self.btn_next.clicked.connect(self.on_next_click)
+        nav_layout.addWidget(self.btn_next)
+        
+        self.layout.addLayout(nav_layout)
+
+    def on_prev_click(self):
+        self._change_date(-1)
+
+    def on_next_click(self):
+        self._change_date(1)
+
+    def _change_date(self, offset):
+        chart_type = self.combo_chart_type.currentText()
+        is_annual = (chart_type == "班次统计" and self.combo_cycle.currentText() == "按年统计")
+        
+        try:
+            current_year = int(self.combo_year.currentText())
+        except ValueError:
+            current_year = datetime.date.today().year
+
+        if is_annual:
+            new_year = current_year + offset
+            self._set_year(new_year)
+        else:
+            try:
+                current_month = int(self.combo_month.currentText())
+            except ValueError:
+                current_month = datetime.date.today().month
+
+            m = current_month + offset
+            y = current_year
+            if m > 12:
+                m = 1
+                y += 1
+            elif m < 1:
+                m = 12
+                y -= 1
+            
+            self._set_year(y)
+            self.combo_month.setCurrentText(str(m))
+
+    def _set_year(self, year):
+        s_year = str(year)
+        if self.combo_year.findText(s_year) == -1:
+            self.combo_year.addItem(s_year)
+        self.combo_year.setCurrentText(s_year)
 
     def on_chart_type_changed(self):
         ctype = self.combo_chart_type.currentText()
@@ -165,7 +235,9 @@ class StatsView(QWidget):
         # 绘制柱状图
         bars = ax.bar(names, counts, color='#007AFF', alpha=0.7)
         
-        ax.set_title(title)
+        # Update external label instead of ax.set_title
+        self.lbl_chart_title.setText(title)
+        
         ax.set_ylabel("班次数量")
         
         # Dynamic Y-limit
@@ -216,7 +288,7 @@ class StatsView(QWidget):
             name = user_map.get(user_code, user_code)
             ax.plot(x_dates, counts, label=name, marker='o', markersize=3)
             
-        ax.set_title(f"{year}年{month}月 累计班次趋势")
+        self.lbl_chart_title.setText(f"{year}年{month}月 累计班次趋势")
         ax.set_xlabel("日期")
         ax.set_ylabel("累计班次")
         ax.legend(loc='upper left', bbox_to_anchor=(1, 1))
