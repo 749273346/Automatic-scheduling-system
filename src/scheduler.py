@@ -128,9 +128,14 @@ class Scheduler:
             except (ValueError, TypeError):
                 continue
         if preferred:
-            available = set(range(7)) - unavailable
-            if available == preferred:
-                return "一级"
+            # 修改逻辑：只要设置了期望值班日，且未明确指定等级，默认视为一级人员（固定排班）
+            # 原逻辑要求 available == preferred 过于严格，导致用户必须手动排除所有其他日期才能被识别为一级
+            return "一级"
+            
+            # Legacy Strict Logic (Commented out)
+            # available = set(range(7)) - unavailable
+            # if available == preferred:
+            #     return "一级"
         return "三级"
 
     def check_constraints(self, user: User, date: datetime.date, strict: bool = True) -> bool:
@@ -533,13 +538,20 @@ class Scheduler:
             emp_type = self._get_employee_type(prefs)
             
             # 1. 均衡性 (Balance)
-            # 降低均衡性权重的绝对值，给随机性留出更多空间
+            # 修改：将二级和三级人员作为一个整体来追求均衡
             if emp_type != "一级":
-                group_users = [u for u in self.users if self._get_employee_type(u.preferences or {}) == emp_type]
+                # 获取所有非一级人员
+                group_users = [u for u in self.users if self._get_employee_type(u.preferences or {}) != "一级"]
+                
+                # 计算这组人的平均值班数
                 group_totals = [self.history_counts.get(u.code, 0) + self.user_week_counts[u.code] for u in group_users]
                 group_avg = (sum(group_totals) / len(group_totals)) if group_totals else 0
+                
                 candidate_total = self.history_counts.get(code, 0) + self.user_week_counts[code]
-                score += (candidate_total - group_avg) * 100 # 原 1000 -> 100
+                
+                # 提高均衡性权重，确保数量趋于一致
+                # 权重由 100 提升至 5000，使其影响力大于等级微弱差异
+                score += (candidate_total - group_avg) * 5000 
 
             # New: Weekend Balance
             # 如果是周末，优先选择周末值班总数较少的人
@@ -550,16 +562,20 @@ class Scheduler:
                     if d.weekday() >= 5 and user in scheduled_users:
                         weekend_total += 1
                 
-                score += weekend_total * 500 # 原 5000 -> 500
+                # 极大提高周末均衡权重，由 500 提升至 20000
+                # 确保周末排班数绝对均匀
+                score += weekend_total * 20000 
             
-            # 2. 员工等级优先度 (Priority) - STRICT TIERING
-            # 必须保证 一级 > 二级 > 三级
+            # 2. 员工等级优先度 (Priority)
+            # 修改：大幅降低等级之间的分数差异，使其仅在排班数相近时起作用
+            # 从而实现 "在数量均衡的前提下，优先使用二级人员"
             if emp_type == "一级":
-                score -= 10000000 # Absolute Priority
+                score -= 100000000 # Absolute Priority (仍然保持绝对优先)
             elif emp_type == "二级":
-                score -= 5000000  # High Priority
+                score -= 2000     # Small Preference (原 5,000,000)
             elif emp_type == "三级":
                 score += 0        # Base Priority
+
 
             # 3. 偏好匹配 (Preference Bonus)
             # 对于二级/三级员工，尽量满足偏好
