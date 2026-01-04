@@ -648,6 +648,14 @@ class Scheduler:
                     # Base priority diffs are ~5,000,000.
                     # We want this to be very strong, effectively a soft "hard constraint".
                     score += 20000000
+
+            # 6. 随机扰动 (Random Noise)
+            # 为了避免排班过于规律（如总是同样的人凑在一起），引入随机扰动
+            # 扰动幅度设定：
+            # - 1个班次的均衡分差约为 1000 分
+            # - 设定 +/- 2000 分的扰动，意味着允许约 2 个班次的偏差
+            # - 这不会打破等级限制 (5,000,000) 或连续值班限制 (20,000,000)
+            score += random.uniform(-2000, 2000)
             
             return score
 
