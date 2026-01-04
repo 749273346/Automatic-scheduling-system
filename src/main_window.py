@@ -35,14 +35,16 @@ class SchedulerWorker(QThread):
         try:
             import datetime
             from src.scheduler import Scheduler
+            from src.rules_manager import RulesManager
             
             all_new_schedules = []
-            current_history = self.history_counts.copy()
-            current_last_duty = self.last_duty_dates.copy()
-            current_weekend_history = self.weekend_history_counts.copy()
             
-            # Track if user worked last weekend (Sat or Sun)
-            current_last_weekend_duty = self.initial_last_weekend_duty.copy()
+            # Load initial loop state
+            state = RulesManager.load_state()
+            current_loop_index = state.get("loop_index", 0)
+            
+            # Load rules once
+            rules = RulesManager.load_rules()
             
             warnings = []
             
@@ -55,33 +57,17 @@ class SchedulerWorker(QThread):
                     if week_start <= s.date < week_end
                 ]
                 
-                scheduler = Scheduler(self.users, week_start, current_history, current_last_duty, current_last_weekend_duty, current_weekend_history)
+                # Init Scheduler with new signature
+                scheduler = Scheduler(self.users, week_start, loop_index=current_loop_index, rules=rules)
                 week_new_schedules = scheduler.generate_schedule(week_existing, mode=self.mode)
                 
-                if scheduler.last_error and self.mode == "all":
-                    warnings.append(f"周起始 {week_start}:\n{scheduler.last_error}")
-
-                if not week_new_schedules and scheduler.last_error and self.mode == "all":
-                    # Failed completely for this week
-                    continue
-
                 all_new_schedules.extend(week_new_schedules)
                 
-                # Update history for next iteration
-                # Also update last_weekend_duty for next week
-                
-                # Reset weekend duty for next iteration
-                next_weekend_duty = {}
-                
-                for s in week_new_schedules:
-                    current_history[s.user.code] = current_history.get(s.user.code, 0) + 1
-                    current_last_duty[s.user.code] = s.date
-                    
-                    if s.date.weekday() >= 5:
-                        next_weekend_duty[s.user.code] = True
-                        current_weekend_history[s.user.code] = current_weekend_history.get(s.user.code, 0) + 1
-                        
-                current_last_weekend_duty = next_weekend_duty
+                # Update loop index for next week
+                current_loop_index = scheduler.new_loop_index
+
+            # Save final state
+            RulesManager.save_state({"loop_index": current_loop_index})
 
             if warnings:
                 self.warning.emit("\n\n".join(warnings))
@@ -89,6 +75,8 @@ class SchedulerWorker(QThread):
             self.finished.emit(all_new_schedules)
             
         except Exception as e:
+            import traceback
+            traceback.print_exc()
             self.error.emit(str(e))
 
 class SidebarButton(QPushButton):
@@ -103,7 +91,7 @@ class SidebarButton(QPushButton):
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("智能排班系统 V1.0.4")
+        self.setWindowTitle("智能排班系统 V2.0.0")
         self.resize(1400, 900)
         
         # Set Window Icon
@@ -224,7 +212,7 @@ class MainWindow(QMainWindow):
         self.sidebar_layout.addWidget(line)
         
         # Staff Panel (Embedded in Sidebar)
-        self.staff_panel = StaffPanel(self.users)
+        self.staff_panel = StaffPanel(self.users, self.db_manager, self.reload_data)
         self.sidebar_layout.addWidget(self.staff_panel)
         
         self.body_layout.addWidget(self.sidebar)
@@ -256,7 +244,7 @@ class MainWindow(QMainWindow):
         
         # Title
         lbl_title = QLabel("排班工作台")
-        lbl_title.setStyleSheet("font-size: 18px; font-weight: bold; color: #333;")
+        lbl_title.setStyleSheet("font-family: 'Microsoft YaHei'; font-size: 24px; font-weight: bold; color: #333;")
         layout.addWidget(lbl_title)
         
         layout.addStretch()
@@ -300,6 +288,48 @@ class MainWindow(QMainWindow):
         action_layout.addWidget(self.btn_export)
         
         layout.addWidget(self.action_container)
+
+        # --- Settings Context Actions (Rules, Personnel) ---
+        self.settings_action_container = QWidget()
+        settings_action_layout = QHBoxLayout(self.settings_action_container)
+        settings_action_layout.setContentsMargins(0, 0, 0, 0)
+        settings_action_layout.setSpacing(10)
+        
+        def create_tab_btn(text, icon, tab_index, active_color="#007AFF"):
+            btn = QPushButton(f"{icon} {text}")
+            btn.setCursor(Qt.PointingHandCursor)
+            btn.setCheckable(True)
+            btn.setAutoExclusive(True)
+            btn.clicked.connect(lambda: self.switch_settings_tab(tab_index))
+            style = f"""
+                QPushButton {{
+                    background-color: #F5F5F7;
+                    color: #555;
+                    border: none;
+                    border-radius: 6px;
+                    padding: 8px 15px;
+                    margin-left: 10px;
+                    font-size: 14px;
+                }}
+                QPushButton:hover {{ background-color: #E5E5E5; }}
+                QPushButton:checked {{ 
+                    background-color: {active_color}; 
+                    color: white; 
+                    font-weight: bold; 
+                }}
+            """
+            btn.setStyleSheet(style)
+            return btn
+            
+        self.btn_tab_rules = create_tab_btn("排班规则", "⚙️", 0, "#007AFF")
+        self.btn_tab_personnel = create_tab_btn("人员管理", "👥", 1, "#5856D6")
+        self.btn_tab_rules.setChecked(True) # Default
+        
+        settings_action_layout.addWidget(self.btn_tab_rules)
+        settings_action_layout.addWidget(self.btn_tab_personnel)
+        
+        layout.addWidget(self.settings_action_container)
+        self.settings_action_container.hide() # Hidden by default
         
         # Vertical Separator
         line = QFrame()
@@ -364,16 +394,25 @@ class MainWindow(QMainWindow):
         if index == 0: # Schedule View
             self.sidebar.setVisible(True)
             self.action_container.setVisible(True)
+            self.settings_action_container.setVisible(False)
             self.reload_data() # Refresh calendar
         else: # Settings or Stats
             self.sidebar.setVisible(False) # Maximize space for settings/stats
             self.action_container.setVisible(False) # Hide schedule actions
             
             if index == 1:
+                self.settings_action_container.setVisible(True)
                 self.settings_view.load_users()
-                self.settings_view.reset_msg_state()
             elif index == 2:
+                self.settings_action_container.setVisible(False)
                 self.stats_view.update_data(self.schedules, self.users)
+
+    def switch_settings_tab(self, tab_index):
+        if hasattr(self, 'settings_view'):
+            self.settings_view.switch_tab(tab_index)
+            # Ensure buttons state
+            self.btn_tab_rules.setChecked(tab_index == 0)
+            self.btn_tab_personnel.setChecked(tab_index == 1)
 
     # --- Legacy Redirects (for compatibility if needed) ---
     def toggle_settings_view(self):
@@ -485,7 +524,7 @@ class MainWindow(QMainWindow):
                 return
             start_date = mondays[0]
             end_date = mondays[-1] + datetime.timedelta(days=6)
-            self.db_manager.clear_range_schedules(start_date, end_date)
+            self.db_manager.clear_range_schedules(start_date, end_date, keep_locked=False)
             self.reload_data()
             self.show_custom_message("成功", "本年排班已清除", QMessageBox.Information)
 
@@ -499,7 +538,7 @@ class MainWindow(QMainWindow):
                 return
             start_date = mondays[0]
             end_date = mondays[-1] + datetime.timedelta(days=6)
-            self.db_manager.clear_range_schedules(start_date, end_date)
+            self.db_manager.clear_range_schedules(start_date, end_date, keep_locked=False)
             self.reload_data()
             self.show_custom_message("成功", "本月排班已清除", QMessageBox.Information)
 
@@ -559,37 +598,8 @@ class MainWindow(QMainWindow):
             return
 
         try:
-            # Save to DB
-            session = self.db_manager.get_session()
-            
-            # Use delete logic based on generated schedules range
-            # Find min and max date in new_schedules to define range
-            if new_schedules:
-                min_date = min(s.date for s in new_schedules)
-                max_date = max(s.date for s in new_schedules)
-                
-                # Delete existing within this exact range (day by day? or range?)
-                # To be safe and consistent with "overwrite", we delete in range
-                # But wait, new_schedules might have gaps if some weeks failed?
-                # Actually, our scheduler generates continuous weeks if successful.
-                # But to be safe, let's delete only for the weeks we scheduled.
-                
-                # Better approach: 
-                # For each week start in our target list, delete that week's schedule
-                # But we don't have the target list here easily unless we store it.
-                # Simpler: Delete range from min to max.
-                
-                session.query(Schedule).filter(Schedule.date >= min_date, Schedule.date <= max_date).delete()
-            
-            # Add all from result
-            db_schedules = []
-            for s in new_schedules:
-                new_s = Schedule(date=s.date, user_id=s.user.id, is_locked=s.is_locked)
-                db_schedules.append(new_s)
-            
-            session.add_all(db_schedules)
-            session.commit()
-            session.close()
+            # Use atomic replacement to avoid DB locks and ensure consistency
+            self.db_manager.replace_schedules(new_schedules)
             
             # Refresh Memory
             self.reload_data()
@@ -664,27 +674,14 @@ class MainWindow(QMainWindow):
         
         if file_path:
             try:
-                # Need to filter schedules for this month/view?
-                # For now, export ALL schedules or visible ones?
-                # Let's export visible ones (current month)
-                # But wait, our 'schedules' list contains ALL.
-                # Let's filter by current view month.
-                
-                # Logic: Filter schedules that fall in current month (or extended view)
-                # Simple: Filter by year and month of current view
-                
+                # Filter schedules strictly for the selected month
                 target_schedules = [
                     s for s in self.schedules 
                     if s.date.year == year and s.date.month == month
                 ]
                 
-                # If target_schedules is empty, maybe export everything or warn?
-                # User might want to export what they see.
-                # If they see adjacent months, they might want those too.
-                # But typically "Export" means the current month's report.
-                
-                # Fallback: if empty, export all? No, that's confusing.
-                # Let's stick to current month filter.
+                # Sort by ID to ensure deterministic order for same-day shifts
+                target_schedules.sort(key=lambda s: s.id if s.id else 0)
                 
                 exporter = Exporter(target_schedules, self.users)
                 # Pass year and month for title generation
@@ -699,29 +696,13 @@ class MainWindow(QMainWindow):
     def handle_manual_drop(self, date, user_id, user_code, source_date=None):
         # Callback from CalendarView when a user is dropped
         try:
-            session = self.db_manager.get_session()
-            
             # 1. Handle Move (if source_date is provided)
             if source_date:
-                # Remove from source date
-                old_sch = session.query(Schedule).filter_by(date=source_date, user_id=user_id).first()
-                if old_sch:
-                    session.delete(old_sch)
+                self.db_manager.delete_schedule(source_date, user_id)
             
-            # 2. Check existence in target date
-            existing = session.query(Schedule).filter_by(date=date, user_id=user_id).first()
-            if existing:
-                # Already there
-                session.commit() # Commit deletion if any
-                session.close()
-                self.reload_data() # Refresh to reflect move if happened
-                return
-
-            # 3. Add to target date
-            new_sch = Schedule(date=date, user_id=user_id, is_locked=True) # Manual drop = Locked?
-            session.add(new_sch)
-            session.commit()
-            session.close()
+            # 2. Add to target date
+            # add_schedule handles existence check internally
+            self.db_manager.add_schedule(date, user_id, is_locked=True)
             
             self.reload_data()
             
@@ -730,22 +711,14 @@ class MainWindow(QMainWindow):
 
     def handle_user_removed(self, date, user_id):
         try:
-            session = self.db_manager.get_session()
-            sch = session.query(Schedule).filter_by(date=date, user_id=user_id).first()
-            if sch:
-                session.delete(sch)
-                session.commit()
-            session.close()
+            self.db_manager.delete_schedule(date, user_id)
             self.reload_data()
         except Exception as e:
             QMessageBox.critical(self, "错误", f"删除人员失败: {str(e)}")
 
     def handle_day_cleared(self, date):
         try:
-            session = self.db_manager.get_session()
-            session.query(Schedule).filter_by(date=date).delete()
-            session.commit()
-            session.close()
+            self.db_manager.delete_day_schedule(date)
             self.reload_data()
         except Exception as e:
             QMessageBox.critical(self, "错误", f"清除排班失败: {str(e)}")

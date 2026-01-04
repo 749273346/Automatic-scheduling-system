@@ -1,0 +1,52 @@
+{
+    "days": {
+        "0": {
+            "type": "fixed",
+            "users": [
+                "A"
+            ]
+        },
+        "1": {
+            "type": "fixed",
+            "users": [
+                "C"
+            ]
+        },
+        "2": {
+            "type": "fixed",
+            "users": [
+                "B"
+            ]
+        },
+        "3": {
+            "type": "fixed",
+            "users": [
+                "C"
+            ]
+        },
+        "4": {
+            "type": "rotation",
+            "users": [
+                "A",
+                "B"
+            ]
+        },
+        "5": {
+            "type": "loop",
+            "users": []
+        },
+        "6": {
+            "type": "loop",
+            "users": []
+        }
+    },
+    "loop_pool": [
+        "I",
+        "E",
+        "F",
+        "D",
+        "G"
+    ],
+    "rotation_start_date": "2026-01-09",
+    "loop_start_date": "2026-01-05"
+}
