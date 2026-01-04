@@ -36,7 +36,11 @@ class StaffListWidget(QListWidget):
         pixmap = QPixmap(100, 30)
         pixmap.fill(Qt.transparent)
         painter = QPainter(pixmap)
-        painter.setBrush(QColor("#007AFF"))
+        
+        # Use user's specific color
+        bg_color = QColor(item.user.color) if item.user.color else QColor("#007AFF")
+        painter.setBrush(bg_color)
+        
         painter.setPen(Qt.NoPen)
         painter.drawRoundedRect(0, 0, 100, 30, 5, 5)
         painter.setPen(Qt.white)
@@ -60,6 +64,15 @@ class StaffPanel(QWidget):
         self.layout.addWidget(title)
         
         self.list_widget = StaffListWidget()
+        # Increase font size and item padding
+        self.list_widget.setStyleSheet("""
+            QListWidget {
+                font-size: 14px;
+            }
+            QListWidget::item {
+                padding: 8px;
+            }
+        """)
         self.layout.addWidget(self.list_widget)
         
         self.refresh_list(users)

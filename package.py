@@ -15,7 +15,7 @@ def build_main_app():
     print("Building main application...")
     # Using PyInstaller to build the main app into dist/智能排班系统
     cmd = [
-        'pyinstaller',
+        sys.executable, '-m', 'PyInstaller',
         '--noconfirm',
         '--onedir',
         '--windowed',
@@ -49,6 +49,24 @@ def copy_extra_resources():
     shutil.copy2(extra_file_abs, dest_dir)
     print(f"Copied {extra_file_rel} to {dest_dir}")
 
+def copy_docs():
+    print("Copying documentation...")
+    dest_dir = os.path.join('dist', '智能排班系统')
+    
+    # Copy 说明文档.md
+    if os.path.exists('说明文档.md'):
+        shutil.copy2('说明文档.md', dest_dir)
+        
+    # Copy 项目信息 folder
+    project_info_src = '项目信息'
+    project_info_dest = os.path.join(dest_dir, '项目信息')
+    if os.path.exists(project_info_src):
+        if os.path.exists(project_info_dest):
+            shutil.rmtree(project_info_dest)
+        shutil.copytree(project_info_src, project_info_dest)
+        
+    print("Docs copied.")
+
 def create_payload_zip():
     print("Creating payload zip...")
     source_dir = os.path.join('dist', '智能排班系统')
@@ -80,7 +98,7 @@ def build_installer(payload_path):
     add_data_arg = f"{payload_path};."
     
     cmd = [
-        'pyinstaller',
+        sys.executable, '-m', 'PyInstaller',
         '--noconfirm',
         '--onefile',
         '--windowed',
@@ -106,13 +124,29 @@ def create_final_release_zip(installer_path):
         # Add a Readme if exists
         if os.path.exists('README.md'):
             zf.write('README.md', 'README.md')
+        # Add 说明文档.md if exists
+        if os.path.exists('说明文档.md'):
+            zf.write('说明文档.md', '说明文档.md')
             
     print(f"Final release zip created at: {os.path.abspath(release_zip_path)}")
+    return release_zip_path
+
+def deploy_to_desktop(zip_path):
+    target_dir = r"C:\Users\74927\Desktop\智能排班系统"
+    print(f"Deploying to {target_dir}...")
+    
+    if not os.path.exists(target_dir):
+        os.makedirs(target_dir)
+        
+    shutil.copy2(zip_path, target_dir)
+    print(f"Successfully deployed package to: {target_dir}")
 
 if __name__ == "__main__":
     clean_build_dirs()
     build_main_app()
     copy_extra_resources()
+    copy_docs()
     payload_zip = create_payload_zip()
     installer_exe = build_installer(payload_zip)
-    create_final_release_zip(installer_exe)
+    final_zip = create_final_release_zip(installer_exe)
+    # deploy_to_desktop(final_zip) # Optional, can be commented out if not needed or fails

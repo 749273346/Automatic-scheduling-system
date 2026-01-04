@@ -20,7 +20,7 @@ class SchedulerWorker(QThread):
     error = pyqtSignal(str)
     warning = pyqtSignal(str)
 
-    def __init__(self, users, history_counts, last_duty_dates, existing_schedules, target_week_starts, initial_last_weekend_duty=None):
+    def __init__(self, users, history_counts, last_duty_dates, existing_schedules, target_week_starts, initial_last_weekend_duty=None, weekend_history_counts=None, mode="all"):
         super().__init__()
         self.users = users
         self.history_counts = history_counts
@@ -28,6 +28,8 @@ class SchedulerWorker(QThread):
         self.existing_schedules = existing_schedules
         self.target_week_starts = target_week_starts
         self.initial_last_weekend_duty = initial_last_weekend_duty or {}
+        self.weekend_history_counts = weekend_history_counts or {}
+        self.mode = mode
 
     def run(self):
         try:
@@ -37,6 +39,7 @@ class SchedulerWorker(QThread):
             all_new_schedules = []
             current_history = self.history_counts.copy()
             current_last_duty = self.last_duty_dates.copy()
+            current_weekend_history = self.weekend_history_counts.copy()
             
             # Track if user worked last weekend (Sat or Sun)
             current_last_weekend_duty = self.initial_last_weekend_duty.copy()
@@ -52,13 +55,13 @@ class SchedulerWorker(QThread):
                     if week_start <= s.date < week_end
                 ]
                 
-                scheduler = Scheduler(self.users, week_start, current_history, current_last_duty, current_last_weekend_duty)
-                week_new_schedules = scheduler.generate_schedule(week_existing)
+                scheduler = Scheduler(self.users, week_start, current_history, current_last_duty, current_last_weekend_duty, current_weekend_history)
+                week_new_schedules = scheduler.generate_schedule(week_existing, mode=self.mode)
                 
-                if scheduler.last_error:
+                if scheduler.last_error and self.mode == "all":
                     warnings.append(f"周起始 {week_start}:\n{scheduler.last_error}")
 
-                if not week_new_schedules and scheduler.last_error:
+                if not week_new_schedules and scheduler.last_error and self.mode == "all":
                     # Failed completely for this week
                     continue
 
@@ -76,6 +79,7 @@ class SchedulerWorker(QThread):
                     
                     if s.date.weekday() >= 5:
                         next_weekend_duty[s.user.code] = True
+                        current_weekend_history[s.user.code] = current_weekend_history.get(s.user.code, 0) + 1
                         
                 current_last_weekend_duty = next_weekend_duty
 
@@ -367,6 +371,7 @@ class MainWindow(QMainWindow):
             
             if index == 1:
                 self.settings_view.load_users()
+                self.settings_view.reset_msg_state()
             elif index == 2:
                 self.stats_view.update_data(self.schedules, self.users)
 
@@ -394,17 +399,32 @@ class MainWindow(QMainWindow):
         return mondays
 
     def _get_mondays_of_year(self, year):
-        """获取某年所有周的周一（只要该周的周一在该年内）"""
+        """
+        获取某年所有周的周一。
+        规则：如果这一周的某一天属于本年，那么在排列本年的时候，这一周的其它天也要排列。
+        即：只要周内任意一天在今年内，该周（周一）就应该被包含。
+        """
         mondays = []
         import datetime
-        d = datetime.date(year, 1, 1)
-        # Find first Monday of the year
-        while d.weekday() != 0:
-            d += datetime.timedelta(days=1)
         
-        while d.year == year:
-            mondays.append(d)
-            d += datetime.timedelta(weeks=1)
+        # 1. 从1月1日开始
+        d = datetime.date(year, 1, 1)
+        
+        # 2. 找到包含1月1日的那一周的周一
+        # 如果1月1日是周一，则是当天；如果是周二，则是前一天，依此类推
+        start_monday = d - datetime.timedelta(days=d.weekday())
+        
+        current_monday = start_monday
+        
+        # 3. 只要周一开始日期还在本年（或之前），就继续检查
+        # 实际上，只要 current_monday 的年份 <= year，说明这一周至少有一部分（或者全部）
+        # 属于本年（或者这一周包含了本年的开始部分）。
+        # 如果 current_monday 到了下一年的1月X日，那么这一周肯定全都在下一年了（因为周一是一周第一天），
+        # 就不需要包含了。
+        while current_monday.year <= year:
+            mondays.append(current_monday)
+            current_monday += datetime.timedelta(weeks=1)
+            
         return mondays
 
     def on_schedule_year_clicked(self):
@@ -416,7 +436,31 @@ class MainWindow(QMainWindow):
         year = self.calendar_view.current_date.year
         month = self.calendar_view.current_date.month
         mondays = self._get_mondays_of_month(year, month)
-        self.auto_schedule_range(mondays, f"{year}年{month}月")
+        
+        # Ask for mode
+        # msg = QMessageBox(self)
+        # msg.setWindowTitle("选择排班模式")
+        # msg.setText(f"即将进行 {year}年{month}月 排班。\n请选择操作方式：")
+        # msg.setIcon(QMessageBox.Question)
+        
+        # btn_all = msg.addButton("一键完整排班", QMessageBox.ActionRole)
+        # btn_l1 = msg.addButton("第1步：仅排一级人员", QMessageBox.ActionRole)
+        # btn_fill = msg.addButton("第2步：补齐剩余人员", QMessageBox.ActionRole)
+        # msg.addButton("取消", QMessageBox.RejectRole)
+        
+        # self._apply_msg_style(msg)
+        # msg.exec_()
+        
+        # clicked_button = msg.clickedButton()
+        # if clicked_button == btn_all:
+        #     self.auto_schedule_range(mondays, f"{year}年{month}月 (完整)", mode="all")
+        # elif clicked_button == btn_l1:
+        #     self.auto_schedule_range(mondays, f"{year}年{month}月 (仅一级)", mode="level1_only")
+        # elif clicked_button == btn_fill:
+        #     self.auto_schedule_range(mondays, f"{year}年{month}月 (补齐)", mode="fill_rest")
+
+        # Simplify to One-Click Full Schedule
+        self.auto_schedule_range(mondays, f"{year}年{month}月", mode="all")
 
     def show_year_context_menu(self, pos):
         menu = QMenu(self)
@@ -459,7 +503,7 @@ class MainWindow(QMainWindow):
             self.reload_data()
             self.show_custom_message("成功", "本月排班已清除", QMessageBox.Information)
 
-    def auto_schedule_range(self, target_week_starts, label_text):
+    def auto_schedule_range(self, target_week_starts, label_text, mode="all"):
         if not self.users:
             reply = QMessageBox.warning(self, "提示", "当前人员列表为空，请前往录入。", QMessageBox.Ok)
             if reply == QMessageBox.Ok:
@@ -473,6 +517,7 @@ class MainWindow(QMainWindow):
         # Get history counts & last duty dates for advanced rules
         history_counts = self.db_manager.get_history_counts()
         last_duty_dates = self.db_manager.get_last_duty_dates()
+        weekend_history_counts = self.db_manager.get_weekend_history_counts()
         
         # Get Last Weekend Duty Status (for first week)
         initial_last_weekend_duty = {}
@@ -495,7 +540,7 @@ class MainWindow(QMainWindow):
         self.progress_dialog.show()
 
         # Start worker thread
-        self.worker = SchedulerWorker(self.users, history_counts, last_duty_dates, self.schedules, target_week_starts, initial_last_weekend_duty)
+        self.worker = SchedulerWorker(self.users, history_counts, last_duty_dates, self.schedules, target_week_starts, initial_last_weekend_duty, weekend_history_counts, mode=mode)
         self.worker.finished.connect(self.on_schedule_finished)
         self.worker.error.connect(self.on_schedule_error)
         self.worker.warning.connect(self.on_schedule_warning)

@@ -42,6 +42,27 @@ class StatisticsManager:
                 
         return dict(stats)
 
+    def get_weekend_stats(self, year: int, month: int = None) -> Dict[str, int]:
+        """
+        计算指定年份(或月份)每人的周末值班天数
+        :return: {user_code: count}
+        """
+        stats = defaultdict(int)
+        for user in self.users:
+            stats[user.code] = 0
+            
+        for sch in self.schedules:
+            if sch.date.year == year:
+                if month is not None and sch.date.month != month:
+                    continue
+                    
+                # 5=Saturday, 6=Sunday
+                if sch.date.weekday() >= 5:
+                    if hasattr(sch.user, 'code'):
+                        stats[sch.user.code] += 1
+                
+        return dict(stats)
+
     def get_monthly_variance(self, year: int, month: int) -> float:
         """
         计算月度班次差异 (最大班次数 - 最小班次数)

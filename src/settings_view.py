@@ -1,7 +1,7 @@
 from PyQt5.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QTableWidget, QTableWidgetItem, 
                              QPushButton, QHeaderView, QInputDialog, QColorDialog, QMessageBox, QLabel, QSpinBox, QGroupBox,
                              QDialog, QTabWidget, QCalendarWidget, QCheckBox, QComboBox, QLineEdit, QFormLayout, QDialogButtonBox, QSpacerItem, QSizePolicy,
-                             QScrollArea, QGridLayout, QListWidget, QMenu, QAction, QFileDialog, QProgressDialog)
+                             QScrollArea, QGridLayout, QListWidget, QListWidgetItem, QMenu, QAction, QFileDialog, QProgressDialog)
 from PyQt5.QtCore import Qt, QLocale
 import openpyxl
 import random
@@ -14,7 +14,11 @@ class SettingsView(QWidget):
         self.users = users
         self.db_manager = db_manager
         self.main_window = main_window # Reference to main window to update UI if needed
+        self.preferences_msg_shown = False
         self.init_ui()
+
+    def reset_msg_state(self):
+        self.preferences_msg_shown = False
 
     def init_ui(self):
         layout = QVBoxLayout(self)
@@ -587,7 +591,10 @@ class SettingsView(QWidget):
                 self.load_users()
                 if hasattr(self.main_window, 'reload_data'):
                     self.main_window.reload_data()
-                QMessageBox.information(self, "成功", "人员添加成功")
+                
+                if not self.preferences_msg_shown:
+                    QMessageBox.information(self, "成功", "人员添加成功")
+                    self.preferences_msg_shown = True
             else:
                 QMessageBox.warning(self, "失败", f"添加失败: {msg}")
 
@@ -620,7 +627,10 @@ class SettingsView(QWidget):
                 self.load_users()
                 if hasattr(self.main_window, 'reload_data'):
                     self.main_window.reload_data()
-                QMessageBox.information(self, "成功", "人员信息已更新\n\n注意：修改仅影响后续自动排班，现有排班记录不会改变。")
+                
+                if not self.preferences_msg_shown:
+                    QMessageBox.information(self, "成功", "人员信息已更新\n\n注意：修改仅影响后续自动排班，现有排班记录不会改变。")
+                    self.preferences_msg_shown = True
             else:
                 QMessageBox.warning(self, "失败", f"更新失败: {msg}")
 
@@ -634,7 +644,10 @@ class SettingsView(QWidget):
                 self.load_users()
                 if hasattr(self.main_window, 'reload_data'):
                     self.main_window.reload_data()
-                QMessageBox.information(self, "成功", "人员已删除")
+                
+                if not self.preferences_msg_shown:
+                    QMessageBox.information(self, "成功", "人员已删除")
+                    self.preferences_msg_shown = True
             else:
                 QMessageBox.warning(self, "失败", "删除失败")
 
@@ -655,7 +668,10 @@ class SettingsView(QWidget):
                 self.load_users()
                 if hasattr(self.main_window, 'reload_data'):
                     self.main_window.reload_data()
-                QMessageBox.information(self, "成功", "颜色已更新")
+                
+                if not self.preferences_msg_shown:
+                    QMessageBox.information(self, "成功", "颜色已更新")
+                    self.preferences_msg_shown = True
             session.close()
 
     def edit_preferences(self, user):
@@ -676,8 +692,29 @@ class SettingsView(QWidget):
                 
                 # Update memory object
                 user.preferences = new_prefs
-                
-                QMessageBox.information(self, "成功", "偏好设置已保存\n\n注意：新的偏好设置将仅应用于后续生成的排班，现有排班不会受影响。")
+                pr = new_prefs.get("periodic_rotation")
+                if pr and pr.get("partner") and pr.get("day_idx") is not None:
+                    partner_code = pr["partner"]
+                    partner = next((u for u in self.users if u.code == partner_code), None)
+                    if partner:
+                        pdb = session.query(User).filter_by(id=partner.id).first()
+                        if pdb:
+                            pp = dict(pdb.preferences) if pdb.preferences else {}
+                            pw = set(pp.get("preferred_weekdays", []))
+                            pw.add(pr["day_idx"])
+                            pp["preferred_weekdays"] = sorted(list(pw))
+                            pp["periodic_rotation"] = {
+                                "partner": user.code,
+                                "day_idx": pr["day_idx"],
+                                "parity": "even" if pr.get("parity", "odd") == "odd" else "odd"
+                            }
+                            pdb.preferences = pp
+                            flag_modified(pdb, "preferences")
+                            session.commit()
+                            partner.preferences = pp
+                if not self.preferences_msg_shown:
+                    QMessageBox.information(self, "成功", "偏好设置已保存\n\n注意：新的偏好设置将仅应用于后续生成的排班，现有排班不会受影响。")
+                    self.preferences_msg_shown = True
             session.close()
 
     def reset_system(self):
@@ -707,6 +744,18 @@ class PreferenceDialog(QDialog):
         self.user = user
         self.all_users = all_users
         self.preferences = dict(user.preferences) if user.preferences else {}
+        self.lock_rotation = None
+        for u in self.all_users:
+            if not u.preferences:
+                continue
+            pr = u.preferences.get("periodic_rotation")
+            if pr and pr.get("partner") == self.user.code:
+                self.lock_rotation = {
+                    "partner": u.code,
+                    "day_idx": pr.get("day_idx", 4),
+                    "parity": "even" if pr.get("parity", "odd") == "odd" else "odd"
+                }
+                break
         
         self.setWindowTitle(f"偏好设置 - {user.code}")
         self.resize(600, 500)
@@ -722,12 +771,17 @@ class PreferenceDialog(QDialog):
         # Tab 1: Preferences (Cycle & Pairing)
         self.tab_advanced = QWidget()
         self.init_advanced_tab()
-        tabs.addTab(self.tab_advanced, "高级偏好")
+        tabs.addTab(self.tab_advanced, "期望值班日期")
 
-        # Tab 2: Blackout Dates
+        # Tab 3: Blackout Dates
         self.tab_dates = QWidget()
         self.init_dates_tab()
         tabs.addTab(self.tab_dates, "不可值班日期")
+        
+        # Tab 4: Preferred Partners (New, only effective for Level 1)
+        self.tab_partners = QWidget()
+        self.init_partners_tab()
+        tabs.addTab(self.tab_partners, "期望排班搭档")
         
         # Default to Advanced Preferences (Index 0)
         tabs.setCurrentIndex(0)
@@ -743,10 +797,174 @@ class PreferenceDialog(QDialog):
         btn_layout.addWidget(btn_cancel)
         btn_layout.addWidget(btn_save)
         layout.addLayout(btn_layout)
+
+    def init_partners_tab(self):
+        layout = QVBoxLayout(self.tab_partners)
+        
+        # Check if current user is Level 1
+        current_type = self._get_user_type(self.user)
+        if current_type != "一级":
+            lbl = QLabel("该功能仅适用于一级人员。")
+            lbl.setAlignment(Qt.AlignCenter)
+            lbl.setStyleSheet("color: gray; font-size: 14px; margin-top: 20px;")
+            layout.addWidget(lbl)
+            layout.addStretch()
+            return
+
+        lbl = QLabel("选择您的期望排班搭档 (仅限二级和三级人员):")
+        layout.addWidget(lbl)
+        
+        lbl_hint = QLabel("提示：已选搭档将按列表顺序优先安排。")
+        lbl_hint.setStyleSheet("color: gray; font-size: 11px;")
+        layout.addWidget(lbl_hint)
+        
+        # Main area: Two lists (Available, Selected)
+        h_layout = QHBoxLayout()
+        
+        # Left: Available
+        v_left = QVBoxLayout()
+        v_left.addWidget(QLabel("待选人员:"))
+        self.list_available_partners = QListWidget()
+        self.list_available_partners.setSelectionMode(QListWidget.ExtendedSelection)
+        v_left.addWidget(self.list_available_partners)
+        h_layout.addLayout(v_left)
+        
+        # Middle: Buttons
+        v_mid = QVBoxLayout()
+        v_mid.addStretch()
+        self.btn_add_partner = QPushButton(">>")
+        self.btn_add_partner.clicked.connect(self.add_partner)
+        v_mid.addWidget(self.btn_add_partner)
+        
+        self.btn_remove_partner = QPushButton("<<")
+        self.btn_remove_partner.clicked.connect(self.remove_partner)
+        v_mid.addWidget(self.btn_remove_partner)
+        v_mid.addStretch()
+        h_layout.addLayout(v_mid)
+        
+        # Right: Selected
+        v_right = QVBoxLayout()
+        v_right.addWidget(QLabel("已选搭档 (按优先级排序):"))
+        self.list_selected_partners = QListWidget()
+        self.list_selected_partners.setSelectionMode(QListWidget.SingleSelection)
+        # Enable basic movement, but specific reordering buttons are safer
+        v_right.addWidget(self.list_selected_partners)
+        
+        # Sort buttons for Selected
+        h_sort = QHBoxLayout()
+        self.btn_move_up = QPushButton("上移")
+        self.btn_move_up.clicked.connect(self.move_partner_up)
+        h_sort.addWidget(self.btn_move_up)
+        
+        self.btn_move_down = QPushButton("下移")
+        self.btn_move_down.clicked.connect(self.move_partner_down)
+        h_sort.addWidget(self.btn_move_down)
+        
+        v_right.addLayout(h_sort)
+        h_layout.addLayout(v_right)
+        
+        layout.addLayout(h_layout)
+        
+        # Load Data
+        self.load_partners_data()
+
+    def _get_user_type(self, user):
+        if not user or not user.preferences:
+            return "一级" # Default
+        return user.preferences.get("employee_type", "一级")
+
+    def load_partners_data(self):
+        self.list_available_partners.clear()
+        self.list_selected_partners.clear()
+        
+        # Get all Level 2 and Level 3 users
+        candidates = []
+        for u in self.all_users:
+            if u.id == self.user.id:
+                continue
+            u_type = self._get_user_type(u)
+            if u_type in ["二级", "三级"]:
+                candidates.append(u)
+        
+        # Existing preferences
+        selected_codes = self.preferences.get("preferred_partners", [])
+        
+        # Populate Selected
+        selected_set = set()
+        for code in selected_codes:
+            # Find user object
+            u = next((x for x in candidates if x.code == code), None)
+            if u:
+                item = QListWidgetItem(f"{u.code} ({u.name or ''})")
+                item.setData(Qt.UserRole, u.code)
+                self.list_selected_partners.addItem(item)
+                selected_set.add(u.code)
+        
+        # Populate Available
+        for u in candidates:
+            if u.code not in selected_set:
+                item = QListWidgetItem(f"{u.code} ({u.name or ''})")
+                item.setData(Qt.UserRole, u.code)
+                self.list_available_partners.addItem(item)
+
+    def add_partner(self):
+        items = self.list_available_partners.selectedItems()
+        if not items:
+            return
+        for item in items:
+            row = self.list_available_partners.row(item)
+            self.list_available_partners.takeItem(row)
+            self.list_selected_partners.addItem(item)
+            
+    def remove_partner(self):
+        items = self.list_selected_partners.selectedItems()
+        if not items:
+            return
+        for item in items:
+            row = self.list_selected_partners.row(item)
+            self.list_selected_partners.takeItem(row)
+            self.list_available_partners.addItem(item)
+
+    def move_partner_up(self):
+        row = self.list_selected_partners.currentRow()
+        if row > 0:
+            item = self.list_selected_partners.takeItem(row)
+            self.list_selected_partners.insertItem(row - 1, item)
+            self.list_selected_partners.setCurrentRow(row - 1)
+
+    def move_partner_down(self):
+        row = self.list_selected_partners.currentRow()
+        if row < self.list_selected_partners.count() - 1:
+            item = self.list_selected_partners.takeItem(row)
+            self.list_selected_partners.insertItem(row + 1, item)
+            self.list_selected_partners.setCurrentRow(row + 1)
         
     def init_dates_tab(self):
         layout = QVBoxLayout(self.tab_dates)
         
+        # --- Unavailable Weekdays ---
+        lbl_weekdays = QLabel("选择该人员无法值班的星期 (固定每周生效):")
+        layout.addWidget(lbl_weekdays)
+        
+        grp_weekdays = QGroupBox()
+        weekdays_layout = QHBoxLayout(grp_weekdays)
+        weekdays_layout.setContentsMargins(10, 5, 10, 5)
+        
+        self.unavailable_weekday_checks = []
+        days = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"]
+        unavailable_days = self.preferences.get("unavailable_weekdays", [])
+        
+        for i, day in enumerate(days):
+            chk = QCheckBox(day)
+            if i in unavailable_days:
+                chk.setChecked(True)
+            self.unavailable_weekday_checks.append(chk)
+            weekdays_layout.addWidget(chk)
+            
+        layout.addWidget(grp_weekdays)
+        layout.addSpacing(10)
+
+        # --- Unavailable Dates ---
         lbl = QLabel("选择该人员无法值班的日期（点击日期切换选中状态）:")
         layout.addWidget(lbl)
         
@@ -884,14 +1102,6 @@ class PreferenceDialog(QDialog):
         
         # Day Selector
         self.combo_rotation_day = QComboBox()
-        days = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"]
-        self.combo_rotation_day.addItems(days)
-        
-        current_day = rotation_pref.get("day_idx", 4) # Default Friday
-        if 0 <= current_day <= 6:
-            self.combo_rotation_day.setCurrentIndex(current_day)
-            
-        rotation_layout.addRow("轮班星期:", self.combo_rotation_day)
         
         # Parity Selector
         self.combo_rotation_parity = QComboBox()
@@ -903,9 +1113,40 @@ class PreferenceDialog(QDialog):
         idx_parity = self.combo_rotation_parity.findData(current_parity)
         if idx_parity >= 0:
             self.combo_rotation_parity.setCurrentIndex(idx_parity)
+
+        # Initialize days dynamically based on preferences
+        self.update_rotation_days() 
+        
+        # Set initial value
+        current_day = rotation_pref.get("day_idx", 4) # Default Friday
+        idx = self.combo_rotation_day.findData(current_day)
+        if idx >= 0:
+            self.combo_rotation_day.setCurrentIndex(idx)
             
+        rotation_layout.addRow("轮班星期:", self.combo_rotation_day)
         rotation_layout.addRow("我的班次:", self.combo_rotation_parity)
         
+        # Connect preferred weekdays change to rotation days update
+        for chk in self.weekday_checks:
+            chk.stateChanged.connect(self.update_rotation_days)
+
+        if self.lock_rotation:
+            p_idx = self.combo_rotation_partner.findData(self.lock_rotation["partner"])
+            if p_idx >= 0:
+                self.combo_rotation_partner.setCurrentIndex(p_idx)
+            d_idx = self.combo_rotation_day.findData(self.lock_rotation["day_idx"])
+            if d_idx >= 0:
+                self.combo_rotation_day.setCurrentIndex(d_idx)
+            r_idx = self.combo_rotation_parity.findData(self.lock_rotation["parity"])
+            if r_idx >= 0:
+                self.combo_rotation_parity.setCurrentIndex(r_idx)
+            self.combo_rotation_partner.setEnabled(False)
+            self.combo_rotation_day.setEnabled(False)
+            self.combo_rotation_parity.setEnabled(False)
+            lbl_locked = QLabel("该用户的轮班由搭档设置，已自动锁定。")
+            lbl_locked.setStyleSheet("color: #FF9500;")
+            rotation_layout.addRow(lbl_locked)
+
         # Explanation
         lbl_rot_hint = QLabel("说明：设置后，您将与搭档在指定星期轮流值班。\n请确保搭档未设置冲突的轮班规则。")
         lbl_rot_hint.setStyleSheet("color: gray; font-size: 11px;")
@@ -915,9 +1156,62 @@ class PreferenceDialog(QDialog):
         
         layout.addStretch()
 
+    def update_rotation_days(self):
+        """Update the available rotation days based on preferred weekdays"""
+        # Save current selection
+        current_day_idx = self.combo_rotation_day.currentData()
+        
+        # Get preferred days indices
+        preferred_indices = []
+        for i, chk in enumerate(self.weekday_checks):
+            if chk.isChecked():
+                preferred_indices.append(i)
+        
+        self.combo_rotation_day.blockSignals(True)
+        self.combo_rotation_day.clear()
+        
+        # If no preferred weekdays selected, disable rotation controls and show "None"
+        if not preferred_indices:
+            self.combo_rotation_day.addItem("无", None)
+            self.combo_rotation_day.setEnabled(False)
+            self.combo_rotation_partner.setEnabled(False)
+            self.combo_rotation_partner.setCurrentIndex(0) # Set to "None (Disabled)" or similar if exists, or just index 0
+            self.combo_rotation_parity.setEnabled(False)
+        else:
+            # Enable controls
+            self.combo_rotation_day.setEnabled(True)
+            self.combo_rotation_partner.setEnabled(True)
+            self.combo_rotation_parity.setEnabled(True)
+            
+            days = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"]
+            
+            for i, day_name in enumerate(days):
+                if i in preferred_indices:
+                    self.combo_rotation_day.addItem(day_name, i)
+            
+            # Restore selection
+            if current_day_idx is not None:
+                idx = self.combo_rotation_day.findData(current_day_idx)
+                if idx >= 0:
+                    self.combo_rotation_day.setCurrentIndex(idx)
+                else:
+                    if self.combo_rotation_day.count() > 0:
+                        self.combo_rotation_day.setCurrentIndex(0)
+            elif self.combo_rotation_day.count() > 0:
+                 self.combo_rotation_day.setCurrentIndex(0)
+        
+        self.combo_rotation_day.blockSignals(False)
+
     def get_preferences(self):
         prefs = self.preferences.copy()
         prefs["blackout_dates"] = sorted(list(self.blackout_dates))
+        
+        # New: Unavailable Weekdays
+        unavailable_weekdays = []
+        for i, chk in enumerate(self.unavailable_weekday_checks):
+            if chk.isChecked():
+                unavailable_weekdays.append(i)
+        prefs["unavailable_weekdays"] = unavailable_weekdays
         
         # 1. Weekdays
         weekdays = []
@@ -941,7 +1235,7 @@ class PreferenceDialog(QDialog):
         if partner_code:
             prefs["periodic_rotation"] = {
                 "partner": partner_code,
-                "day_idx": self.combo_rotation_day.currentIndex(),
+                "day_idx": self.combo_rotation_day.currentData(),
                 "parity": self.combo_rotation_parity.currentData()
             }
         else:
@@ -952,6 +1246,20 @@ class PreferenceDialog(QDialog):
         # Remove legacy pairing key if it exists, as UI is gone
         if "avoid_pairing" in prefs:
             del prefs["avoid_pairing"]
+
+        # 5. Preferred Partners (New)
+        # Collect from list_selected_partners
+        if hasattr(self, 'list_selected_partners'):
+            preferred_partners = []
+            for i in range(self.list_selected_partners.count()):
+                item = self.list_selected_partners.item(i)
+                code = item.data(Qt.UserRole)
+                if code:
+                    preferred_partners.append(code)
+            if preferred_partners:
+                prefs["preferred_partners"] = preferred_partners
+            elif "preferred_partners" in prefs:
+                del prefs["preferred_partners"]
             
         return prefs
 

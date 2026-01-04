@@ -63,6 +63,6 @@ def install_debugger():
     try:
         log_file = setup_logging()
         sys.excepthook = handle_exception
-        print(f"🔧 [DebugSystem] 调试系统已启动。错误日志将保存至: {log_file}")
+        print(f"[INFO] [DebugSystem] 调试系统已启动。错误日志将保存至: {log_file}")
     except Exception as e:
-        print(f"⚠️ [DebugSystem] 无法初始化日志系统: {e}")
+        print(f"[ERROR] [DebugSystem] 无法初始化日志系统: {e}")

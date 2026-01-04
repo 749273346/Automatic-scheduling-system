@@ -1,5 +1,17 @@
 import sys
 import os
+
+# 解决 Windows 下控制台输出乱码问题
+if sys.platform.startswith('win'):
+    try:
+        sys.stdout.reconfigure(encoding='utf-8')
+        sys.stderr.reconfigure(encoding='utf-8')
+    except AttributeError:
+        # Python < 3.7
+        import io
+        sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
+        sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8')
+
 from src.debug_utils import install_debugger
 
 # 将当前目录添加到 sys.path

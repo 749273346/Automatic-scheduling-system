@@ -43,11 +43,11 @@ class StatsView(QWidget):
         # 1. 图表类型
         controls_layout.addWidget(QLabel("图表类型:"))
         self.combo_chart_type = QComboBox()
-        self.combo_chart_type.addItems(["班次统计", "长期趋势"])
+        self.combo_chart_type.addItems(["班次统计", "周末值班数", "长期趋势"])
         self.combo_chart_type.currentIndexChanged.connect(self.on_chart_type_changed)
         controls_layout.addWidget(self.combo_chart_type)
         
-        # 2. 统计周期 (仅针对班次统计)
+        # 2. 统计周期 (仅针对班次统计和周末值班数)
         self.lbl_cycle = QLabel("统计周期:")
         controls_layout.addWidget(self.lbl_cycle)
         
@@ -115,7 +115,7 @@ class StatsView(QWidget):
 
     def _change_date(self, offset):
         chart_type = self.combo_chart_type.currentText()
-        is_annual = (chart_type == "班次统计" and self.combo_cycle.currentText() == "按年统计")
+        is_annual = ((chart_type == "班次统计" or chart_type == "周末值班数") and self.combo_cycle.currentText() == "按年统计")
         
         try:
             current_year = int(self.combo_year.currentText())
@@ -151,7 +151,7 @@ class StatsView(QWidget):
 
     def on_chart_type_changed(self):
         ctype = self.combo_chart_type.currentText()
-        is_stats = (ctype == "班次统计")
+        is_stats = (ctype == "班次统计" or ctype == "周末值班数")
         
         self.lbl_cycle.setVisible(is_stats)
         self.combo_cycle.setVisible(is_stats)
@@ -201,6 +201,12 @@ class StatsView(QWidget):
                 self._draw_bar_chart(year, month, is_annual=False)
             else:
                 self._draw_bar_chart(year, month, is_annual=True)
+        elif chart_type == "周末值班数":
+            cycle = self.combo_cycle.currentText()
+            if cycle == "按月统计":
+                self._draw_weekend_chart(year, month, is_annual=False)
+            else:
+                self._draw_weekend_chart(year, month, is_annual=True)
         elif chart_type == "长期趋势":
             self._draw_trend_line_chart(year, month)
             
@@ -251,6 +257,46 @@ class StatsView(QWidget):
             plt.setp(ax.get_xticklabels(), rotation=45, ha="right")
         
         # 添加数值标签
+        for bar in bars:
+            height = bar.get_height()
+            if height > 0:
+                ax.text(bar.get_x() + bar.get_width()/2., height,
+                        f'{int(height)}',
+                        ha='center', va='bottom')
+
+    def _draw_weekend_chart(self, year, month, is_annual):
+        ax = self.figure.add_subplot(111)
+        
+        if is_annual:
+            stats = self.stats_manager.get_weekend_stats(year)
+            title = f"{year}年 年度周末值班统计"
+        else:
+            stats = self.stats_manager.get_weekend_stats(year, month)
+            title = f"{year}年{month}月 周末值班统计"
+        
+        names = []
+        counts = []
+        
+        for user in self.users:
+            display_name = user.name if user.name else user.code
+            names.append(display_name)
+            counts.append(stats.get(user.code, 0))
+        
+        # 使用不同颜色区分周末统计 (例如橙色)
+        bars = ax.bar(names, counts, color='#FF9500', alpha=0.7)
+        
+        self.lbl_chart_title.setText(title)
+        
+        ax.set_ylabel("周末值班次数")
+        
+        if counts:
+            ax.set_ylim(0, max(counts) * 1.2 if max(counts) > 0 else 5)
+        else:
+            ax.set_ylim(0, 5)
+        
+        if len(names) > 10:
+            plt.setp(ax.get_xticklabels(), rotation=45, ha="right")
+        
         for bar in bars:
             height = bar.get_height()
             if height > 0:

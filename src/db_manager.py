@@ -281,6 +281,18 @@ class DBManager:
         session.close()
         return dict(results)
 
+    def get_weekend_history_counts(self):
+        """获取每个用户的周末排班总数"""
+        session = self.get_session()
+        from sqlalchemy import func
+        # SQLite: 0=Sunday, 6=Saturday
+        results = session.query(User.code, func.count(Schedule.id))\
+            .join(Schedule, User.id == Schedule.user_id)\
+            .filter(func.strftime('%w', Schedule.date).in_(['0', '6']))\
+            .group_by(User.code).all()
+        session.close()
+        return dict(results)
+
     def get_last_duty_dates(self):
         """获取每个用户的最近一次排班日期"""
         session = self.get_session()

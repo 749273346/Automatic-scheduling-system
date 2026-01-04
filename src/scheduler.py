@@ -6,7 +6,7 @@ from src.consts import GroupType, WeekDay, MAX_SHIFTS_PER_WEEK, SHIFTS_PER_DAY
 from src.models import User, Schedule
 
 class Scheduler:
-    def __init__(self, users: List[User], start_date: datetime.date, history_counts: Dict[str, int] = None, last_duty_dates: Dict[str, datetime.date] = None, last_weekend_duty: Dict[str, bool] = None):
+    def __init__(self, users: List[User], start_date: datetime.date, history_counts: Dict[str, int] = None, last_duty_dates: Dict[str, datetime.date] = None, last_weekend_duty: Dict[str, bool] = None, weekend_history_counts: Dict[str, int] = None):
         self.users = users
         self.start_date = start_date
         self.history_counts = history_counts or defaultdict(int)
@@ -14,6 +14,8 @@ class Scheduler:
         # New parameter: last_weekend_duty
         # Maps user_code -> True if they worked LAST weekend (Sat or Sun)
         self.last_weekend_duty = last_weekend_duty or {}
+        self.weekend_history_counts = weekend_history_counts or defaultdict(int)
+        self.rotation_exclusions: Dict[datetime.date, set] = defaultdict(set)
         
         # 确保 start_date 是周一
         if self.start_date.weekday() != 0:
@@ -62,6 +64,11 @@ class Scheduler:
             if date_str in blackout_dates:
                 return False
                 
+            # Check unavailable weekdays
+            unavailable_weekdays = user.preferences.get("unavailable_weekdays", [])
+            if date.weekday() in unavailable_weekdays:
+                return False
+                
         weekday = date.weekday()  # 0=Mon, 6=Sun
         
         # 2. 检查 Legacy GroupType (仅当未设置偏好时回退，或者保留作为基础规则)
@@ -85,15 +92,46 @@ class Scheduler:
         默认为 3 (最低)
         """
         if user.preferences and isinstance(user.preferences, dict):
-            p_str = user.preferences.get("employee_type", "三级")
+            p_str = self._get_employee_type(user.preferences)
             if p_str == "一级": return 1
             if p_str == "二级": return 2
             if p_str == "三级": return 3
-            # Legacy mapping
-            if p_str == "一类": return 1
-            if p_str == "二类": return 2
-            if p_str == "三类": return 3
         return 3 # Default to Level 3
+
+    def _get_preferred_weekdays(self, prefs: dict) -> List[int]:
+        preferred = prefs.get("preferred_weekdays", None)
+        if preferred is None:
+            preferred = prefs.get("preferred_days", [])
+        if not preferred:
+            return []
+        normalized: List[int] = []
+        for v in preferred:
+            try:
+                normalized.append(int(v))
+            except (ValueError, TypeError):
+                continue
+        return normalized
+
+    def _get_employee_type(self, prefs: dict) -> str:
+        raw = prefs.get("employee_type", None)
+        mapping = {"一类": "一级", "二类": "二级", "三类": "三级"}
+        if raw in mapping:
+            return mapping[raw]
+        if raw in ("一级", "二级", "三级"):
+            return raw
+        preferred = set(self._get_preferred_weekdays(prefs))
+        unavailable_weekdays = prefs.get("unavailable_weekdays", [])
+        unavailable = set()
+        for v in unavailable_weekdays:
+            try:
+                unavailable.add(int(v))
+            except (ValueError, TypeError):
+                continue
+        if preferred:
+            available = set(range(7)) - unavailable
+            if available == preferred:
+                return "一级"
+        return "三级"
 
     def check_constraints(self, user: User, date: datetime.date, strict: bool = True) -> bool:
         """
@@ -110,52 +148,79 @@ class Scheduler:
         
         # 0. 基础硬性限制：不可值班日期
         unavailable = prefs.get("unavailable_dates", [])
+        blackouts = prefs.get("blackout_dates", [])
         date_str = date.strftime("%Y-%m-%d")
-        if date_str in unavailable:
+        if date_str in unavailable or date_str in blackouts:
             return False
+        unavailable_weekdays = prefs.get("unavailable_weekdays", [])
+        if date.weekday() in unavailable_weekdays:
+            return False
+
+        # 0.5 检查当天是否已经排了该用户 (Move up for early exit)
+        if user in self.schedule_result[date]:
+            return False
+        if user.code in self.rotation_exclusions.get(date, set()):
+            return False
+
+        # --- 一级人员特殊处理：绝对优先 (Level 1 Override) ---
+        emp_type = self._get_employee_type(prefs)
+        if emp_type == "一级":
+            preferred_days = self._get_preferred_weekdays(prefs)
+            # 规则：一级人员必须只在期望日值班
+            if preferred_days and date.weekday() not in preferred_days:
+                return False
+            
+            # 规则：节假日回避
+            avoid_hols = prefs.get("avoid_holidays", [])
+            if avoid_hols:
+                hol_name = self._get_holiday_name(date)
+                if hol_name and hol_name in avoid_hols:
+                    return False
+            
+            # 满足上述硬性条件后，一级人员直接通过（忽略排班数量、周末连班等限制）
+            return True
+        # ----------------------------------------------------
 
         # 1. 数量限制
         # 注意：如果是周六，我们需要预判周日也排班，所以如果是周六，当前必须 <= MAX-2 (因为 Sat+Sun=2)
         # 如果是周日，理论上必须是周六已排的人，这里只需检查 <= MAX
         current_shifts = self.user_week_counts[user.code]
+        if prefs.get("preferred_cycle") == "每两周 (隔周)":
+            last_duty = self.last_duty_dates.get(user.code)
+            if last_duty and (date - last_duty).days < 14:
+                return False
         if date.weekday() == 5: # Saturday
             if current_shifts + 2 > MAX_SHIFTS_PER_WEEK:
                 return False
             
-            # 额外检查：如果排了周六，必须能排周日
             sunday_date = date + datetime.timedelta(days=1)
             sunday_str = sunday_date.strftime("%Y-%m-%d")
             if sunday_str in unavailable:
                 return False
             
-            # 检查周日是否符合偏好 (Level 1)
-            emp_type = prefs.get("employee_type", "一级")
+            emp_type = self._get_employee_type(prefs)
             if emp_type == "一级":
-                preferred_days = prefs.get("preferred_weekdays", [])
+                preferred_days = self._get_preferred_weekdays(prefs)
                 if preferred_days and 6 not in preferred_days:
                     return False
-                    
         elif date.weekday() == 6: # Sunday
-             if current_shifts >= MAX_SHIFTS_PER_WEEK:
+            if current_shifts >= MAX_SHIFTS_PER_WEEK:
                 return False
         else:
             if current_shifts >= MAX_SHIFTS_PER_WEEK:
                 return False
 
-        # 2. 检查当天是否已经排了该用户
-        if user in self.schedule_result[date]:
-            return False
+        # 2. 检查当天是否已经排了该用户 (Removed - Moved to top)
+        # (Logic moved to step 0.5)
 
         # 3. 员工等级与偏好 (Rule 2)
-        emp_type = prefs.get("employee_type", "一级")
-        preferred_days = prefs.get("preferred_weekdays", []) # [0, 1, 4...]
+        # emp_type check moved to top for Level 1 bypass
         
-        # 一级员工：偏好必须满足 (Strict)
-        if emp_type == "一级":
-            if preferred_days and date.weekday() not in preferred_days:
-                return False
+        # 3.5 Level 2/3 Preference Check
+        preferred_days = self._get_preferred_weekdays(prefs)
         
         # 4. 节假日回避 (Legacy/Optional)
+
         avoid_hols = prefs.get("avoid_holidays", [])
         if avoid_hols:
             hol_name = self._get_holiday_name(date)
@@ -171,10 +236,11 @@ class Scheduler:
 
         return True
 
-    def generate_schedule(self, existing_schedules: List[Schedule] = None) -> List[Schedule]:
+    def generate_schedule(self, existing_schedules: List[Schedule] = None, mode: str = "all") -> List[Schedule]:
         """
         使用回溯法生成排班表
         :param existing_schedules: 已有的排班记录（如锁定的排班），算法将在此基础上补充
+        :param mode: "all" (Default), "level1_only", "fill_rest"
         """
         # 备份初始状态，以便重试
         initial_schedule_result = defaultdict(list)
@@ -193,60 +259,92 @@ class Scheduler:
         dates = [self.start_date + datetime.timedelta(days=i) for i in range(7)]
 
         # 尝试策略 1: 严格模式 (Strict = True)
-        self.schedule_result = initial_schedule_result.copy()
-        # Deep copy needed for defaultdict(list) to avoid sharing lists? 
-        # Actually schedule_result values are lists of User objects. Shallow copy of dict is fine if we create new lists.
-        # But copy() of defaultdict only copies the reference if values are mutable objects?
-        # Let's do a safer copy for schedule_result
         self.schedule_result = defaultdict(list)
         for k, v in initial_schedule_result.items():
             self.schedule_result[k] = list(v)
             
         self.user_week_counts = initial_user_week_counts.copy()
+        
+        # Determine Mode: "Level1 Only" vs "Standard"
+        # If fill_rest, we assume Level 1 is already handled or we just skip fixed assignment step if needed?
+        # Actually, _apply_level1 checks "if user in self.schedule_result ... continue".
+        # So it's safe to run it again.
+        
+        self._apply_level1_fixed_assignments()
+        self._apply_rotation_rules()
         self._apply_fg_rules()
         self._apply_h_rules()
-        self._apply_rotation_rules()
+        
+        if mode == "level1_only":
+            # Just return what we have from fixed assignments
+            return self.get_result_list()
+            
         self.steps = 0
+        
+        # If strict=True passed to generate_schedule? (Not currently supported)
+        # Let's assume we want to support a mode where we stop here if requested.
+        # But for now, let's keep the existing flow.
         
         if self._backtrack(dates, 0, 0, strict=True):
             return self.get_result_list()
         
-        # If strict mode failed, analyze WHY it failed before trying loose mode
-        # Actually, if we are in strict mode and it failed, we MUST report failure if it's due to Level 1 constraints
-        # But wait, maybe it's just hard to find a perfect match.
-        # The user said: "If found unable to satisfy... issue warning... and state reason"
-        # This implies we should TRY to produce a schedule (maybe with violations?) but WARN.
-        # OR we produce NO schedule and warn.
-        # "Only limited to auto scheduling... if unable to satisfy... warning... reason"
-        # Usually, users prefer "Best Effort" + "Warning".
-        # But if we strictly enforced Level 1 in check_constraints, then _backtrack failed means no valid schedule exists with those constraints.
-        
-        # Let's perform a diagnostic run to find the bottleneck
-        self.last_error = self.analyze_failure(dates)
+        # 如果严格模式失败，先生成分析报告
+        strict_failure_analysis = self.analyze_failure(dates)
         
         # 尝试策略 2: 宽松模式 (Strict = False)
-        # Even if we have an error, maybe we can produce a result?
-        # But the user said "If unable to satisfy... issue warning".
-        # If we return a result from loose mode, we effectively "satisfied" the request but ignored constraints.
-        # We should attach the warning to the result?
-        # Scheduler returns List[Schedule]. It doesn't have a side channel for warnings.
-        # But we stored `self.last_error`. The caller can check it.
-        
         # Reset state
         self.schedule_result = defaultdict(list)
         for k, v in initial_schedule_result.items():
             self.schedule_result[k] = list(v)
         self.user_week_counts = initial_user_week_counts.copy()
         
+        self._apply_level1_fixed_assignments()
+        self._apply_rotation_rules()
         self._apply_fg_rules()
         self._apply_h_rules()
-        self._apply_rotation_rules()
         self.steps = 0
         
         if self._backtrack(dates, 0, 0, strict=False):
+            # 宽松模式成功，说明是一级人员偏好以外的软约束（如周末冷却）导致严格模式失败
+            # 这种情况下，不应该报错说"一级人员偏好无法满足"，而是提示放宽了规则
+            self.last_error = "警告：由于严格约束下无解，系统已自动放宽周末冷却规则以完成排班。"
             return self.get_result_list()
             
+        # 宽松模式也失败，说明存在硬性冲突（主要是一级人员偏好或人手不足）
+        # 使用之前的分析报告
+        self.last_error = strict_failure_analysis
         return []
+
+    def _apply_level1_fixed_assignments(self):
+        """
+        固定安排一级人员在其期望值班日
+        策略：
+        1. 激进策略：完全按照一级人员的"期望值班日"进行排班，不考虑轮班互斥。
+        2. 后续清理：由 _apply_rotation_rules 负责检测冲突并移除不该值班的搭档。
+        """
+        for user in self.users:
+            prefs = user.preferences or {}
+            if self._get_employee_type(prefs) != "一级":
+                continue
+            preferred_days = self._get_preferred_weekdays(prefs)
+            if not preferred_days:
+                # 若未设置期望日，则不进行固定安排
+                continue
+            for day_idx in preferred_days:
+                target_date = self.start_date + datetime.timedelta(days=day_idx)
+                
+                # [Change] 不再在此处检查轮班逻辑，全部先排上
+                
+                # 已排满或已包含该用户跳过
+                if len(self.schedule_result[target_date]) >= SHIFTS_PER_DAY:
+                    continue
+                if user in self.schedule_result[target_date]:
+                    continue
+                
+                # 即使是严格模式，对于一级人员，只要没有硬性黑名单冲突，check_constraints 都会通过
+                if self.check_constraints(user, target_date, strict=True):
+                    self.schedule_result[target_date].append(user)
+                    self.user_week_counts[user.code] += 1
 
     def _apply_h_rules(self):
         """
@@ -307,10 +405,6 @@ class Scheduler:
             self.user_week_counts[target_user.code] += 1
 
     def _apply_rotation_rules(self):
-        """
-        应用定期轮班规则 (Periodic Rotation)
-        规则 3：轮班系统只有在该员工选择了在这天期望值班才能选择
-        """
         processed = set()
         
         for user in self.users:
@@ -318,63 +412,57 @@ class Scheduler:
             rot_pref = prefs.get("periodic_rotation")
             if not rot_pref:
                 continue
-            
             partner_code = rot_pref.get("partner")
             day_idx = rot_pref.get("day_idx")
+            # Robust Type Cast
+            try:
+                day_idx = int(day_idx) if day_idx is not None else None
+            except (ValueError, TypeError):
+                continue
+                
             parity = rot_pref.get("parity", "odd")
-            
             if not partner_code or day_idx is None:
                 continue
-                
-            # Rule 3 Check: Must be in preferred_weekdays
-            preferred_days = prefs.get("preferred_weekdays", [])
-            if preferred_days and day_idx not in preferred_days:
+            target_date = self.start_date + datetime.timedelta(days=day_idx)
+            pair_key = (target_date, tuple(sorted([user.code, partner_code])))
+            if pair_key in processed:
                 continue
-                
-            # Find partner user object
+            processed.add(pair_key)
             partner = next((u for u in self.users if u.code == partner_code), None)
             if not partner:
                 continue
-            
-            # Check partner preference too? (Maybe symmetric?)
-            # Usually rotation is set up by one person or mutually. 
-            # If partner didn't prefer this day, should we force?
-            # User said "Employee selected...". Assume both must comply if they are to be scheduled.
-            partner_prefs = partner.preferences or {}
-            partner_preferred = partner_prefs.get("preferred_weekdays", [])
-            if partner_preferred and day_idx not in partner_preferred:
-                continue
-
-            # Determine target date
-            target_date = self.start_date + datetime.timedelta(days=day_idx)
-            
-            # Check if this rule for this date is already processed
-            pair_key = (target_date, tuple(sorted([user.code, partner.code])))
-            if pair_key in processed:
-                continue
-                
-            processed.add(pair_key)
-            
-            # Determine who is on duty
             week_num = target_date.isocalendar()[1]
             is_odd_week = (week_num % 2 != 0)
+            # Determine who is on duty
+            if (parity == "odd" and is_odd_week) or (parity == "even" and not is_odd_week):
+                selected_user = user
+                other_user = partner
+            else:
+                selected_user = partner
+                other_user = user
             
-            selected_user = None
-            if parity == "odd":
-                selected_user = user if is_odd_week else partner
-            else: # even
-                selected_user = user if not is_odd_week else partner
-                
-            # Apply to schedule
-            # Check constraints first? Rotation usually overrides, but Level 1 constraint is HARD.
-            # If selected_user is Level 1, we already checked preferred_days above.
-            # Check max shifts?
+            # 1. 无论 selected_user 是否已安排，other_user 都必须被排除
+            self.rotation_exclusions[target_date].add(other_user.code)
+            
+            # Safety Net: 如果 other_user 在之前的步骤（如一级固定）中被错误安排了，立即移除
+            if other_user in self.schedule_result[target_date]:
+                self.schedule_result[target_date].remove(other_user)
+                self.user_week_counts[other_user.code] -= 1
+            
+            sel_prefs = selected_user.preferences or {}
+            emp_type_sel = self._get_employee_type(sel_prefs)
+            preferred_days_sel = self._get_preferred_weekdays(sel_prefs)
+            if emp_type_sel == "一级" and preferred_days_sel and day_idx not in preferred_days_sel:
+                continue
+
+            # 2. 尝试安排 selected_user (如果尚未安排)
+            if selected_user in self.schedule_result[target_date]:
+                continue
+
             if self.check_constraints(selected_user, target_date, strict=True):
-                if selected_user not in self.schedule_result[target_date]:
-                    # Check if slot available
-                    if len(self.schedule_result[target_date]) < SHIFTS_PER_DAY:
-                        self.schedule_result[target_date].append(selected_user)
-                        self.user_week_counts[selected_user.code] += 1
+                if len(self.schedule_result[target_date]) < SHIFTS_PER_DAY:
+                    self.schedule_result[target_date].append(selected_user)
+                    self.user_week_counts[selected_user.code] += 1
 
     def _backtrack(self, dates: List[datetime.date], day_idx: int, slot_idx: int, strict: bool) -> bool:
         """
@@ -412,7 +500,13 @@ class Scheduler:
         # 如果是周日 (6)，候选人只能是周六 (5) 已排的人
         if current_date.weekday() == 6:
             saturday_date = current_date - datetime.timedelta(days=1)
-            candidates = list(self.schedule_result[saturday_date])
+            saturday_users = self.schedule_result[saturday_date]
+            
+            # FIX: Ensure strict order matching with Saturday (Top->Top, Bottom->Bottom)
+            if slot_idx < len(saturday_users):
+                candidates = [saturday_users[slot_idx]]
+            else:
+                candidates = list(saturday_users)
             
             # 如果周六没人（异常情况），说明状态不对，回溯
             if not candidates:
@@ -420,14 +514,14 @@ class Scheduler:
         else:
             candidates = list(self.users)
         
-        # 简单启发式：
-        # 1. 优先选择期望在今天值班的人 (Priority Boost)
-        #    - 如果用户偏好包含今天 (preferred_weekdays)，给予最高优先级
-        # 2. 优先级排序：一级 > 二级 > 三级
-        # 3. 优先当前排班数少的 (硬约束)
-        # 4. 其次历史排班总数少的 (软均衡)
-        # 5. 随机打乱 (避免死板)
-        random.shuffle(candidates) 
+            # 简单启发式：
+            # 1. 优先选择期望在今天值班的人 (Priority Boost)
+            #    - 如果用户偏好包含今天 (preferred_weekdays)，给予最高优先级
+            # 2. 优先级排序：一级 > 二级 > 三级
+            # 3. 优先当前排班数少的 (硬约束)
+            # 4. 其次历史排班总数少的 (软均衡)
+            # 5. 随机打乱 (避免死板)
+            random.shuffle(candidates) 
         
         def calculate_score(user):
             """
@@ -441,31 +535,63 @@ class Scheduler:
             score = 0.0
             code = user.code
             prefs = user.preferences or {}
+            emp_type = self._get_employee_type(prefs)
             
             # 1. 均衡性 (Balance)
-            # Rule 5: Balance total shifts over time
-            total_shifts = self.history_counts[code] + self.user_week_counts[code]
-            score += total_shifts * 1000 
+            if emp_type != "一级":
+                group_users = [u for u in self.users if self._get_employee_type(u.preferences or {}) == emp_type]
+                group_totals = [self.history_counts.get(u.code, 0) + self.user_week_counts[u.code] for u in group_users]
+                group_avg = (sum(group_totals) / len(group_totals)) if group_totals else 0
+                candidate_total = self.history_counts.get(code, 0) + self.user_week_counts[code]
+                score += (candidate_total - group_avg) * 1000 
+
+            # New: Weekend Balance
+            # 如果是周末，优先选择周末值班总数较少的人
+            if current_date.weekday() >= 5:
+                weekend_total = self.weekend_history_counts.get(code, 0)
+                # 加上本周已排的周末班次（例如正在排周日，需考虑周六）
+                for d, scheduled_users in self.schedule_result.items():
+                    if d.weekday() >= 5 and user in scheduled_users:
+                        weekend_total += 1
+                
+                score += weekend_total * 5000 # 给予更高的权重以平衡周末
             
-            # 2. 员工等级优先度 (Priority)
-            # 一级员工在 check_constraints 已过滤，这里主要区分二级和三级
-            # 二级比三级优先 -> 二级分数更低
-            emp_type = prefs.get("employee_type", "一级")
-            if emp_type == "二级":
-                score -= 100
+            # 2. 员工等级优先度 (Priority) - STRICT TIERING
+            # 必须保证 一级 > 二级 > 三级
+            # 权重必须远大于均衡分 (1000/shift)，确保跨等级不通过均衡来竞争
+            if emp_type == "一级":
+                score -= 10000000 # Absolute Priority
+            elif emp_type == "二级":
+                score -= 5000000  # High Priority
             elif emp_type == "三级":
-                score += 0 # No bonus
-            elif emp_type == "一级":
-                # Level 1 usually hard restricted, but if they are candidate, prioritize them?
-                # Actually, if Level 1 is restricted to preferred days, we should prioritize giving them shifts on those days if available?
-                # Maybe neutral.
-                pass
+                score += 0        # Base Priority
+
                 
             # 3. 偏好匹配 (Preference Bonus)
             # 对于二级/三级员工，尽量满足偏好
-            preferred_days = prefs.get("preferred_weekdays", [])
+            preferred_days = self._get_preferred_weekdays(prefs)
             if preferred_days and current_date.weekday() in preferred_days:
                 score -= 500 # 给予很大优惠，使其优先于无偏好的人
+
+            # 3.5. 期望排班搭档 (Level 1 Preferred Partners)
+            # 检查当天已排的一级人员是否期望当前候选人
+            for scheduled_user in self.schedule_result[current_date]:
+                s_prefs = scheduled_user.preferences or {}
+                if self._get_employee_type(s_prefs) == "一级":
+                    partners = s_prefs.get("preferred_partners", [])
+                    if code in partners:
+                        # Found in preferred list!
+                        try:
+                            idx = partners.index(code)
+                            # Boost logic:
+                            # We want preferred partners to be prioritized significantly.
+                            # Base Level 2 is -5,000,000. Base Level 3 is 0.
+                            # If we want a Preferred Level 3 to beat a Non-Preferred Level 2, we need > 5,000,000 boost.
+                            # Let's give 6,000,000 base boost, decreasing by rank.
+                            boost = 6000000 - (idx * 10000) 
+                            score -= boost
+                        except ValueError:
+                            pass
                 
             # 4. 周末冷却 (Weekend Fairness) - Rule 4
             # "If arranged to weekend... try not to arrange again"
@@ -497,6 +623,31 @@ class Scheduler:
                          # If last duty was recent (e.g. Friday), maybe penalty?
                          # User didn't specify.
                          pass
+
+            # 5. 避免连续值班 (Avoid Consecutive Duty)
+            # 除了周末 (Sat->Sun) 必须连续外，其余情况尽量避免连续值班
+            if current_date.weekday() != 6: # Not Sunday
+                yesterday = current_date - datetime.timedelta(days=1)
+                worked_yesterday = False
+                
+                # Case 1: Yesterday was in this scheduling window (e.g. Tue-Sat)
+                # self.schedule_result is keyed by date, so we can check directly
+                if yesterday in self.schedule_result:
+                    if user in self.schedule_result[yesterday]:
+                        worked_yesterday = True
+                        
+                # Case 2: Yesterday was before this window (i.e. Monday checking last Sunday)
+                # Check last_duty_dates
+                elif current_date.weekday() == 0:
+                     last_duty = self.last_duty_dates.get(code)
+                     if last_duty and last_duty == yesterday:
+                         worked_yesterday = True
+                
+                if worked_yesterday:
+                    # Massive Penalty to avoid consecutive days
+                    # Base priority diffs are ~5,000,000.
+                    # We want this to be very strong, effectively a soft "hard constraint".
+                    score += 20000000
             
             return score
 
