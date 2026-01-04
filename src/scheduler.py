@@ -496,31 +496,26 @@ class Scheduler:
 
         # 获取候选人列表
         # 优化策略：优先选择当前排班数较少的人，增加随机性以避免每次结果一样
+        
         # 特殊规则：周末同人 (Saturday Sunday fixed same 2 people)
         # 如果是周日 (6)，候选人只能是周六 (5) 已排的人
         if current_date.weekday() == 6:
             saturday_date = current_date - datetime.timedelta(days=1)
             saturday_users = self.schedule_result[saturday_date]
             
-            # FIX: Ensure strict order matching with Saturday (Top->Top, Bottom->Bottom)
+            # 严格对应：Slot 0 对应 Slot 0，Slot 1 对应 Slot 1
             if slot_idx < len(saturday_users):
                 candidates = [saturday_users[slot_idx]]
             else:
-                candidates = list(saturday_users)
+                # 异常情况，理论上周六应该排满。如果周六也没排满，那周日只能尝试补其他人（但这违反了同人规则）
+                # 这里我们假设周六已排好，只取对应位置的人
+                candidates = [] 
             
-            # 如果周六没人（异常情况），说明状态不对，回溯
+            # 如果候选人为空，说明周六没排好，或者逻辑出错，无法继续
             if not candidates:
                 return False
         else:
             candidates = list(self.users)
-        
-            # 简单启发式：
-            # 1. 优先选择期望在今天值班的人 (Priority Boost)
-            #    - 如果用户偏好包含今天 (preferred_weekdays)，给予最高优先级
-            # 2. 优先级排序：一级 > 二级 > 三级
-            # 3. 优先当前排班数少的 (硬约束)
-            # 4. 其次历史排班总数少的 (软均衡)
-            # 5. 随机打乱 (避免死板)
             random.shuffle(candidates) 
         
         def calculate_score(user):
@@ -538,12 +533,13 @@ class Scheduler:
             emp_type = self._get_employee_type(prefs)
             
             # 1. 均衡性 (Balance)
+            # 降低均衡性权重的绝对值，给随机性留出更多空间
             if emp_type != "一级":
                 group_users = [u for u in self.users if self._get_employee_type(u.preferences or {}) == emp_type]
                 group_totals = [self.history_counts.get(u.code, 0) + self.user_week_counts[u.code] for u in group_users]
                 group_avg = (sum(group_totals) / len(group_totals)) if group_totals else 0
                 candidate_total = self.history_counts.get(code, 0) + self.user_week_counts[code]
-                score += (candidate_total - group_avg) * 1000 
+                score += (candidate_total - group_avg) * 100 # 原 1000 -> 100
 
             # New: Weekend Balance
             # 如果是周末，优先选择周末值班总数较少的人
@@ -554,11 +550,10 @@ class Scheduler:
                     if d.weekday() >= 5 and user in scheduled_users:
                         weekend_total += 1
                 
-                score += weekend_total * 5000 # 给予更高的权重以平衡周末
+                score += weekend_total * 500 # 原 5000 -> 500
             
             # 2. 员工等级优先度 (Priority) - STRICT TIERING
             # 必须保证 一级 > 二级 > 三级
-            # 权重必须远大于均衡分 (1000/shift)，确保跨等级不通过均衡来竞争
             if emp_type == "一级":
                 score -= 10000000 # Absolute Priority
             elif emp_type == "二级":
@@ -566,7 +561,6 @@ class Scheduler:
             elif emp_type == "三级":
                 score += 0        # Base Priority
 
-                
             # 3. 偏好匹配 (Preference Bonus)
             # 对于二级/三级员工，尽量满足偏好
             preferred_days = self._get_preferred_weekdays(prefs)
@@ -574,106 +568,137 @@ class Scheduler:
                 score -= 500 # 给予很大优惠，使其优先于无偏好的人
 
             # 3.5. 期望排班搭档 (Level 1 Preferred Partners)
-            # 检查当天已排的一级人员是否期望当前候选人
             for scheduled_user in self.schedule_result[current_date]:
                 s_prefs = scheduled_user.preferences or {}
                 if self._get_employee_type(s_prefs) == "一级":
                     partners = s_prefs.get("preferred_partners", [])
                     if code in partners:
-                        # Found in preferred list!
                         try:
                             idx = partners.index(code)
-                            # Boost logic:
-                            # We want preferred partners to be prioritized significantly.
-                            # Base Level 2 is -5,000,000. Base Level 3 is 0.
-                            # If we want a Preferred Level 3 to beat a Non-Preferred Level 2, we need > 5,000,000 boost.
-                            # Let's give 6,000,000 base boost, decreasing by rank.
                             boost = 6000000 - (idx * 10000) 
                             score -= boost
                         except ValueError:
                             pass
                 
             # 4. 周末冷却 (Weekend Fairness) - Rule 4
-            # "If arranged to weekend... try not to arrange again"
             if current_date.weekday() >= 5:
-                # New Logic using last_weekend_duty
                 if self.last_weekend_duty.get(code, False):
-                     # Massive Penalty to enforce "Try not to" as strongly as possible
-                     # Unless they are the ONLY candidates, they should lose to anyone else.
-                     # Base balance diff might be ~1000-2000. 
-                     # Give 50000 to be safe.
                      score += 50000 
                 
-                # Also keep the old logic for fallback (if last_weekend_duty not provided or for gap checks)
                 last_duty = self.last_duty_dates.get(code)
                 if last_duty and isinstance(last_duty, datetime.date):
                     days_diff = (current_date - last_duty).days
-                    # If they worked recently (e.g. yesterday or day before), penalty
-                    # But if it's the SAME weekend (e.g. Sat -> Sun), we WANT them (for consecutive rule)
-                    # Check logic:
-                    # If current is Sat(5): Last duty being recent is bad (unless we want consecutive days? No, we want distinct weekends)
-                    # If current is Sun(6): Last duty SHOULD be Sat(5) (yesterday).
-                    
                     if current_date.weekday() == 6: # Sunday
-                         # If last duty was Sat (1 day ago), that is GOOD (Rule 1).
-                         # We actually enforce this in candidates list logic.
-                         # So here we don't need to penalize Sat->Sun.
                          pass
                     elif current_date.weekday() == 5: # Saturday
-                         # If last duty was recent (e.g. Friday), maybe penalty?
-                         # User didn't specify.
                          pass
 
             # 5. 避免连续值班 (Avoid Consecutive Duty)
-            # 除了周末 (Sat->Sun) 必须连续外，其余情况尽量避免连续值班
             if current_date.weekday() != 6: # Not Sunday
                 yesterday = current_date - datetime.timedelta(days=1)
                 worked_yesterday = False
                 
-                # Case 1: Yesterday was in this scheduling window (e.g. Tue-Sat)
-                # self.schedule_result is keyed by date, so we can check directly
                 if yesterday in self.schedule_result:
                     if user in self.schedule_result[yesterday]:
                         worked_yesterday = True
                         
-                # Case 2: Yesterday was before this window (i.e. Monday checking last Sunday)
-                # Check last_duty_dates
                 elif current_date.weekday() == 0:
                      last_duty = self.last_duty_dates.get(code)
                      if last_duty and last_duty == yesterday:
                          worked_yesterday = True
                 
                 if worked_yesterday:
-                    # Massive Penalty to avoid consecutive days
-                    # Base priority diffs are ~5,000,000.
-                    # We want this to be very strong, effectively a soft "hard constraint".
                     score += 20000000
 
-            # 6. 随机扰动 (Random Noise)
-            # 为了避免排班过于规律（如总是同样的人凑在一起），引入随机扰动
-            # 扰动幅度设定：
-            # - 1个班次的均衡分差约为 1000 分
-            # - 设定 +/- 2000 分的扰动，意味着允许约 2 个班次的偏差
-            # - 这不会打破等级限制 (5,000,000) 或连续值班限制 (20,000,000)
-            score += random.uniform(-2000, 2000)
+            # 6. 随机扰动 (Random Noise) - 已在外部 shuffle 处理，此处仅作微小扰动以防平局
+            # 如果不做Top-K，这里加大随机范围也可以
+            # 但为了保证"等级"绝对优先，随机范围不能超过等级分差 (5,000,000)
+            # 均衡分差现在是 ~100/shift. 
+            # 我们可以给一个较大的随机范围，例如 +/- 500，这样允许 5 个班次的差距内随机选择
+            score += random.uniform(-500, 500)
             
             return score
 
         candidates.sort(key=calculate_score)
+        
+        # Top-K 随机策略 (针对非一级人员)
+        # 如果前 K 名分数相近（意味着等级相同，且没有硬性冲突），则从中随机选择
+        # 这比单纯的 random.uniform 更能保证"差不多"的均衡，同时足够随机
+        
+        final_candidates = candidates
+        
+        # 仅在非周日且候选人较多时使用 Top-K（周日必须严格跟随周六）
+        if current_date.weekday() != 6 and len(candidates) > 3:
+             # 取前 5 名
+             top_k = candidates[:5]
+             # 检查第1名和第5名的分数差距
+             # 如果差距过大（说明跨等级了，或者有严重的连续值班惩罚），则不能混在一起
+             # 我们只在"同等级且无硬惩罚"的人群中随机
+             
+             base_score = calculate_score(top_k[0]) # Re-calc or store? optimization needed but ok for now
+             
+             filtered_top = []
+             for c in top_k:
+                 s = calculate_score(c)
+                 # 阈值设定：2000分以内。这涵盖了均衡分差异(几百分)和随机扰动(几百分)
+                 # 但排除了等级差异(几百万)和连续值班(几千万)
+                 if s - base_score < 2000: 
+                     filtered_top.append(c)
+                 else:
+                     break
+            
+             if len(filtered_top) > 1:
+                 random.shuffle(filtered_top)
+                 # 将打乱后的 Top-K 放回原列表头部
+                 final_candidates = filtered_top + candidates[len(filtered_top):]
 
-        for user in candidates:
-            if self.check_constraints(user, current_date, strict):
-                # 尝试安排
-                self.schedule_result[current_date].append(user)
+        for user in final_candidates:
+            # 关键修改：如果是周六，必须预判周日是否也能排该用户
+            # 除非是一级人员且只有周六偏好（这种情况在 calculate_score 可能已经处理，或者允许例外？）
+            # 用户说"周六和周日值班人员是相同的"是底层规则。所以我们强制检查。
+            
+            if current_date.weekday() == 5: # Saturday
+                sunday_date = current_date + datetime.timedelta(days=1)
+                
+                # 检查周六能不能排
+                if not self.check_constraints(user, current_date, strict):
+                    continue
+                    
+                # 检查周日能不能排 (注意：周日排班时 current_shifts 已经是 +1 了，所以这里要考虑)
+                # 我们可以临时把 count +1 模拟一下，或者直接调用 check_constraints
+                # check_constraints 内部会检查 max_shifts。
+                # 如果我们现在排周六，count 是 N。周日时 count 是 N+1。
+                # check_constraints(sunday) 会检查 (N+1) < MAX。
+                # 所以我们只需要确认 user 在周日是 available 的，并且没有黑名单冲突。
+                
+                # 临时增加计数以模拟周六已排
                 self.user_week_counts[user.code] += 1
+                self.schedule_result[current_date].append(user) # 临时占位以便 check_constraints (如 check duplicate)
                 
-                # 递归下一步
-                if self._backtrack(dates, next_day, next_slot, strict):
-                    return True
+                can_do_sunday = self.check_constraints(user, sunday_date, strict)
                 
-                # 回溯：撤销选择
+                # 回滚状态
                 self.schedule_result[current_date].pop()
                 self.user_week_counts[user.code] -= 1
+                
+                if not can_do_sunday:
+                    continue
+
+            # 普通检查
+            elif not self.check_constraints(user, current_date, strict):
+                continue
+
+            # 尝试安排
+            self.schedule_result[current_date].append(user)
+            self.user_week_counts[user.code] += 1
+            
+            # 递归下一步
+            if self._backtrack(dates, next_day, next_slot, strict):
+                return True
+            
+            # 回溯：撤销选择
+            self.schedule_result[current_date].pop()
+            self.user_week_counts[user.code] -= 1
                 
         return False
 
