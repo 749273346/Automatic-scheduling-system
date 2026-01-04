@@ -9,7 +9,8 @@ from src.consts import GroupType
 
 class DBManager:
     def __init__(self, db_path="schedule.db"):
-        self.engine = create_engine(f'sqlite:///{db_path}')
+        # Increase timeout to 30 seconds to handle potential locks better
+        self.engine = create_engine(f'sqlite:///{db_path}', connect_args={'timeout': 30})
         self.Session = sessionmaker(bind=self.engine)
         self.init_db()
 
@@ -139,42 +140,32 @@ class DBManager:
             return None, str(e)
 
     def update_user(self, user_id, **kwargs):
-        session = self.get_session()
         try:
-            u = session.query(User).filter_by(id=user_id).first()
-            if not u:
-                return False, "用户不存在"
-            
-            for k, v in kwargs.items():
-                if hasattr(u, k):
-                    setattr(u, k, v)
-            
-            session.commit()
-            session.close()
+            with self.session_scope() as session:
+                u = session.query(User).filter_by(id=user_id).first()
+                if not u:
+                    return False, "用户不存在"
+                
+                for k, v in kwargs.items():
+                    if hasattr(u, k):
+                        setattr(u, k, v)
             return True, "成功"
         except Exception as e:
-            session.rollback()
-            session.close()
             return False, str(e)
             
     def delete_user(self, user_id):
         # Hard delete as requested by user to allow ID reuse
-        session = self.get_session()
         try:
-            u = session.query(User).filter_by(id=user_id).first()
-            if u:
-                # 1. Delete all schedules for this user
-                session.query(Schedule).filter_by(user_id=user_id).delete()
-                
-                # 2. Delete the user
-                session.delete(u)
-                
-                session.commit()
-            session.close()
+            with self.session_scope() as session:
+                u = session.query(User).filter_by(id=user_id).first()
+                if u:
+                    # 1. Delete all schedules for this user
+                    session.query(Schedule).filter_by(user_id=user_id).delete()
+                    
+                    # 2. Delete the user
+                    session.delete(u)
             return True
         except Exception as e:
-            session.rollback()
-            session.close()
             print(f"Delete failed: {e}")
             return False
 
@@ -221,55 +212,105 @@ class DBManager:
 
     def add_schedule(self, date_obj, user_id, is_locked=False):
         session = self.get_session()
-        # 检查是否存在
-        existing = session.query(Schedule).options(joinedload(Schedule.user)).filter_by(date=date_obj, user_id=user_id).first()
-        if not existing:
-            new_schedule = Schedule(date=date_obj, user_id=user_id, is_locked=is_locked)
-            session.add(new_schedule)
-            session.commit()
-            session.refresh(new_schedule)
-            # Eager load user
-            session.query(Schedule).options(joinedload(Schedule.user)).filter_by(id=new_schedule.id).first()
-            session.expunge(new_schedule)
+        try:
+            # 检查是否存在
+            existing = session.query(Schedule).options(joinedload(Schedule.user)).filter_by(date=date_obj, user_id=user_id).first()
+            if not existing:
+                new_schedule = Schedule(date=date_obj, user_id=user_id, is_locked=is_locked)
+                session.add(new_schedule)
+                session.commit()
+                session.refresh(new_schedule)
+                # Eager load user
+                session.query(Schedule).options(joinedload(Schedule.user)).filter_by(id=new_schedule.id).first()
+                session.expunge(new_schedule)
+                return new_schedule
+            
+            session.expunge(existing)
+            return existing
+        except:
+            session.rollback()
+            raise
+        finally:
             session.close()
-            return new_schedule
-        session.expunge(existing)
-        session.close()
-        return existing
 
     def delete_schedule(self, date_obj, user_id):
-        session = self.get_session()
-        session.query(Schedule).filter_by(date=date_obj, user_id=user_id).delete()
-        session.commit()
-        session.close()
+        try:
+            with self.session_scope() as session:
+                session.query(Schedule).filter_by(date=date_obj, user_id=user_id).delete()
+        except Exception as e:
+            print(f"Error deleting schedule: {e}")
+            raise
+
+    def delete_day_schedule(self, date_obj):
+        try:
+            with self.session_scope() as session:
+                session.query(Schedule).filter_by(date=date_obj).delete()
+        except Exception as e:
+            print(f"Error deleting day schedule: {e}")
+            raise
         
     def save_schedules(self, schedules):
         """批量保存排班"""
-        session = self.get_session()
-        for sch in schedules:
-            # 这里的 schedule 对象可能是 detached 的或者新建的
-            # 我们根据 date 和 user_id 来判断
-            existing = session.query(Schedule).filter_by(date=sch.date, user_id=sch.user_id).first()
-            if not existing:
-                new_sch = Schedule(date=sch.date, user_id=sch.user_id, is_locked=sch.is_locked)
-                session.add(new_sch)
-            else:
-                existing.is_locked = sch.is_locked
-        session.commit()
-        session.close()
+        try:
+            with self.session_scope() as session:
+                for sch in schedules:
+                    # 这里的 schedule 对象可能是 detached 的或者新建的
+                    # 我们根据 date 和 user_id 来判断
+                    existing = session.query(Schedule).filter_by(date=sch.date, user_id=sch.user_id).first()
+                    if not existing:
+                        new_sch = Schedule(date=sch.date, user_id=sch.user_id, is_locked=sch.is_locked)
+                        session.add(new_sch)
+                    else:
+                        existing.is_locked = sch.is_locked
+        except Exception as e:
+            print(f"Error saving schedules: {e}")
+            raise
 
     def clear_range_schedules(self, start_date, end_date, keep_locked=True):
-        session = self.get_session()
-        query = session.query(Schedule).filter(
-            Schedule.date >= start_date, 
-            Schedule.date <= end_date
-        )
-        if keep_locked:
-            query = query.filter(Schedule.is_locked == False)
-        
-        query.delete(synchronize_session=False)
-        session.commit()
-        session.close()
+        try:
+            with self.session_scope() as session:
+                query = session.query(Schedule).filter(
+                    Schedule.date >= start_date, 
+                    Schedule.date <= end_date
+                )
+                if keep_locked:
+                    query = query.filter(Schedule.is_locked == False)
+                
+                query.delete(synchronize_session=False)
+        except Exception as e:
+            print(f"Error clearing schedules: {e}")
+            raise
+
+    def replace_schedules(self, new_schedules):
+        """Atomically replace schedules in the given range"""
+        if not new_schedules:
+            return
+            
+        try:
+            # Calculate range from input
+            dates = [s.date for s in new_schedules]
+            min_date = min(dates)
+            max_date = max(dates)
+            
+            with self.session_scope() as session:
+                # Delete existing in range
+                session.query(Schedule).filter(Schedule.date >= min_date, Schedule.date <= max_date).delete()
+                
+                # Add new
+                db_schedules = []
+                for s in new_schedules:
+                    # Handle both detached objects and raw data
+                    u_id = s.user_id
+                    if u_id is None and s.user:
+                        u_id = s.user.id
+                    
+                    new_sch = Schedule(date=s.date, user_id=u_id, is_locked=s.is_locked)
+                    db_schedules.append(new_sch)
+                
+                session.add_all(db_schedules)
+        except Exception as e:
+            print(f"Error replacing schedules: {e}")
+            raise
 
     def get_history_counts(self):
         session = self.get_session()
