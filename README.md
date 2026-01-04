@@ -1,6 +1,6 @@
-# 排班系统 (Scheduling System)
+# 排班系统 (Automatic Scheduling System)
 
-基于 Python + PyQt5 的智能排班系统。
+根据设定要求进行自动排班，分为周期模式和概率模式。基于 Python + PyQt5 开发。
 
 ## 项目文档
 详细的开发计划和需求说明请参考：[项目开发计划书.md](项目开发计划书.md)
@@ -13,7 +13,9 @@
    ```
 
 2. 运行项目：
-   *(待开发)*
+   ```bash
+   python run.py
+   ```
 
 ## 目录结构
 - `src/`: 源代码
