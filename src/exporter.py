@@ -4,6 +4,11 @@ from openpyxl import Workbook
 from openpyxl.styles import Font, Alignment, PatternFill, Border, Side
 from openpyxl.utils import get_column_letter
 
+try:
+    import xlwt
+except ImportError:
+    xlwt = None
+
 class Exporter:
     def __init__(self, schedules, users):
         self.schedules = schedules
@@ -120,6 +125,9 @@ class Exporter:
 
     def export_to_excel(self, filepath, year=None, month=None):
         """Unified export method with year/month title support"""
+        if filepath.lower().endswith('.xls'):
+            return self._export_to_xls(filepath, year, month)
+            
         wb = Workbook()
         ws = wb.active
         ws.title = "排班表"
@@ -190,6 +198,108 @@ class Exporter:
         widths = [6, 15, 6, 8, 12, 12, 15, 15]
         for i, w in enumerate(widths):
             ws.column_dimensions[get_column_letter(i+1)].width = w
+            
+        wb.save(filepath)
+
+    def _export_to_xls(self, filepath, year=None, month=None):
+        if xlwt is None:
+            raise ImportError("xlwt 库未安装，无法导出 .xls 格式文件。")
+            
+        wb = xlwt.Workbook(encoding='utf-8')
+        ws = wb.add_sheet("排班表")
+        
+        # 字体定义
+        font_title = xlwt.Font()
+        font_title.name = '宋体'
+        font_title.height = 20 * 20 # 20pt
+        font_title.bold = True
+        
+        font_header = xlwt.Font()
+        font_header.name = '宋体'
+        font_header.height = 11 * 20
+        font_header.bold = True
+        
+        font_content = xlwt.Font()
+        font_content.name = '宋体'
+        font_content.height = 11 * 20
+        
+        # 边框定义
+        borders = xlwt.Borders()
+        borders.left = xlwt.Borders.THIN
+        borders.right = xlwt.Borders.THIN
+        borders.top = xlwt.Borders.THIN
+        borders.bottom = xlwt.Borders.THIN
+        
+        # 对齐方式
+        align_center = xlwt.Alignment()
+        align_center.horz = xlwt.Alignment.HORZ_CENTER
+        align_center.vert = xlwt.Alignment.VERT_CENTER
+        
+        # 背景颜色
+        pattern_header = xlwt.Pattern()
+        pattern_header.pattern = xlwt.Pattern.SOLID_PATTERN
+        pattern_header.pattern_fore_colour = 22 # 浅灰背景 (22 对应 25% gray)
+        
+        # 样式对象
+        style_title = xlwt.XFStyle()
+        style_title.font = font_title
+        style_title.alignment = align_center
+        style_title.borders = borders
+        
+        style_header = xlwt.XFStyle()
+        style_header.font = font_header
+        style_header.alignment = align_center
+        style_header.borders = borders
+        style_header.pattern = pattern_header
+        
+        style_content = xlwt.XFStyle()
+        style_content.font = font_content
+        style_content.alignment = align_center
+        style_content.borders = borders
+        
+        # 1. 大标题
+        title_text = "现场值班表"
+        if year and month:
+            title_text = f"{year}年{month}月排班表"
+        elif year:
+            title_text = f"{year}年排班表"
+            
+        ws.write_merge(0, 0, 0, 7, title_text, style_title)
+        ws.row(0).height_mismatch = True
+        ws.row(0).height = int(40 * 20)
+        
+        # 2. 表头
+        headers = ["序号", "日期", "星期", "时间", "值班1", "值班2", "值班电话", "备注"]
+        for col_idx, h in enumerate(headers):
+            ws.write(1, col_idx, h, style_header)
+        ws.row(1).height_mismatch = True
+        ws.row(1).height = int(25 * 20)
+        
+        # 3. 数据填充
+        rows = self._get_daily_rows()
+        for i, row in enumerate(rows):
+            data_row = [
+                row['seq'],
+                row['date'],
+                row['weekday'],
+                row['time'],
+                row['u1_name'],
+                row['u2_name'],
+                row['phone_display'],
+                row['remark']
+            ]
+            row_idx = i + 2
+            for col_idx, val in enumerate(data_row):
+                ws.write(row_idx, col_idx, val, style_content)
+                
+            ws.row(row_idx).height_mismatch = True
+            ws.row(row_idx).height = int(22 * 20)
+            
+        # 4. 列宽设置
+        widths = [6, 15, 6, 8, 12, 12, 15, 15]
+        for i, w in enumerate(widths):
+            # xlwt width 约为 openpyxl 的 w * 256
+            ws.col(i).width = int(w * 256)
             
         wb.save(filepath)
 

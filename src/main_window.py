@@ -663,13 +663,13 @@ class MainWindow(QMainWindow):
         # 1. Generate default filename based on current view
         year = self.calendar_view.current_date.year
         month = self.calendar_view.current_date.month
-        default_filename = f"{year}年{month}月排班表.xlsx"
+        default_filename = f"{year}年{month}月排班表.xls"
 
         file_path, _ = QFileDialog.getSaveFileName(
             self, 
             "导出Excel", 
             default_filename,  # Set default filename
-            "Excel Files (*.xlsx)"
+            "Excel Files (*.xls)"
         )
         
         if file_path:
