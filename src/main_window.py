@@ -96,8 +96,20 @@ class MainWindow(QMainWindow):
         
         # Set Window Icon
         import os
-        if os.path.exists("resources/icon.png"):
-            self.setWindowIcon(QIcon("resources/icon.png"))
+        import sys
+        
+        def get_resource_path(relative_path):
+            try:
+                # PyInstaller stores data in _MEIPASS
+                base_path = sys._MEIPASS
+            except Exception:
+                # Fallback to the project root directory
+                base_path = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+            return os.path.join(base_path, relative_path)
+            
+        icon_path = get_resource_path("resources/icon.png")
+        if os.path.exists(icon_path):
+            self.setWindowIcon(QIcon(icon_path))
         
         # Init DB
         self.db_manager = DBManager()
